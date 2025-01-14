@@ -1,11 +1,14 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
-import os
-import time
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 import logging
 import random
 import mpisppy.log
-import mpisppy.utils.sputils as sputils
 import mpisppy.cylinders.spoke as spoke
 
 from mpisppy.utils.xhat_eval import Xhat_Eval
@@ -23,7 +26,6 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
 
     def xhatbase_prep(self):
 
-        verbose = self.opt.options['verbose']
         if "bundles_per_rank" in self.opt.options\
            and self.opt.options["bundles_per_rank"] != 0:
             raise RuntimeError("xhat spokes cannot have bundles (yet)")
@@ -32,23 +34,6 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
         self.verbose = self.opt.options["verbose"] # typing aid  
         self.solver_options = self.opt.options["xhat_looper_options"]["xhat_solver_options"]
 
-        # Start code to support running trace. TBD: factor this up?
-        if self.cylinder_rank == 0 and \
-                'suffle_running_trace_prefix' in self.opt.options and \
-                self.opt.options['shuffle_running_trace_prefix'] is not None:
-            running_trace_prefix =\
-                            self.opt.options['shuffle_running_trace_prefix']
-
-            filen = running_trace_prefix+self.__class__.__name__+'.csv'
-            if os.path.exists(filen):
-                raise RuntimeError(f"running trace file {filen} already exists!")
-            with open(filen, 'w') as f:
-                f.write("time,scen,value\n")
-            self.running_trace_filen = filen
-        else:
-            self.running_trace_filen = None
-        # end code to support running trace
-        
         if not isinstance(self.opt, Xhat_Eval):
             raise RuntimeError("XhatShuffleInnerBound must be used with Xhat_Eval.")
             
@@ -59,26 +44,13 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
         xhatter.pre_iter0()  # for an extension
         self.opt._save_original_nonants()
 
-        teeme = False
-        if "tee-rank0-solves" in self.opt.options:
-            teeme = self.opt.options['tee-rank0-solves']
+        self.opt._lazy_create_solvers()  # no iter0 loop, but we need the solvers
 
-        self.opt.solve_loop(
-            solver_options=self.solver_options,
-            dtiming=False,
-            gripe=True,
-            tee=teeme,
-            verbose=verbose
-        )
-        self.opt._update_E1()  # Apologies for doing this after the solves...
+        self.opt._update_E1()
         if abs(1 - self.opt.E1) > self.opt.E1_tolerance:
-            raise ValueError(f"Total probability of scenarios was {self.opt.E1}"+\
-                                 f"E1_tolerance = {self.opt.E1_tolerance}")
-        infeasP = self.opt.infeas_prob()
-        if infeasP != 0.:
-            raise ValueError(f"Infeasibility detected; E_infeas={infeasP}")
-        
-        ### end iter0 stuff
+            raise ValueError(f"Total probability of scenarios was {self.opt.E1} "+\
+                                 f"(E1_tolerance is {self.opt.E1_tolerance})")
+        ### end iter0 stuff (but note: no need for iter 0 solves in an xhatter)
 
         xhatter.post_iter0()
  
@@ -91,19 +63,21 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
 
 
     def try_scenario_dict(self, xhat_scenario_dict):
+        """ wrapper for _try_one"""
         snamedict = xhat_scenario_dict
 
+        stage2EFsolvern = self.opt.options.get("stage2EFsolvern", None)
+        branching_factors = self.opt.options.get("branching_factors", None)  # for stage2ef
         obj = self.xhatter._try_one(snamedict,
-                            solver_options = self.solver_options,
-                            verbose=False,
-                            restore_nonants=False)
+                                    solver_options = self.solver_options,
+                                    verbose=False,
+                                    restore_nonants=False,
+                                    stage2EFsolvern=stage2EFsolvern,
+                                    branching_factors=branching_factors)
         def _vb(msg): 
             if self.verbose and self.opt.cylinder_rank == 0:
                 print ("(rank0) " + msg)
 
-        if self.running_trace_filen is not None:
-            with open(self.running_trace_filen, "a") as f:
-                f.write(f"{time.time()},{snamedict},{obj}\n")
         if obj is None:
             _vb(f"    Infeasible {snamedict}")
             return False
@@ -114,7 +88,6 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
         return update
 
     def main(self):
-        verbose = self.opt.options["verbose"] # typing aid  
         logger.debug(f"Entering main on xhatshuffle spoke rank {self.global_rank}")
 
         self.xhatbase_prep()
@@ -148,6 +121,10 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
 
         xh_iter = 1
         while not self.got_kill_signal():
+            # When there is no iter0, the serial number must be checked.
+            # (unrelated: uncomment the next line to see the source of delay getting an xhat)
+            if self.get_serial_number() == 0:
+                continue
 
             if (xh_iter-1) % 100 == 0:
                 logger.debug(f'   Xhatshuffle loop iter={xh_iter} on rank {self.global_rank}')
@@ -162,7 +139,11 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
 
                 # update the caches
                 self.opt._put_nonant_cache(self.localnonants)
-                self.opt._restore_nonants()
+                # just for sending the values to other scenarios
+                # so we don't need to tell persistent solvers
+                self.opt._restore_nonants(update_persistent=False)
+                
+                scenario_cycler.begin_epoch()
 
             next_scendict = scenario_cycler.get_next()
             if next_scendict is not None:
@@ -170,9 +151,7 @@ class XhatShuffleInnerBound(spoke.InnerBoundNonantSpoke):
                 update = self.try_scenario_dict(next_scendict)
                 if update:
                     _vb(f"   Updating best to {next_scendict}")
-                    scenario_cycler.best = next_scendict
-            else:
-                scenario_cycler.begin_epoch()
+                    scenario_cycler.best = next_scendict["ROOT"]
 
             #_vb(f"    scenario_cycler._scenarios_this_epoch {scenario_cycler._scenarios_this_epoch}")
 
@@ -198,9 +177,10 @@ class ScenarioCycler:
         self._shuffled_scenarios = shuffled_scenarios
         self._num_scenarios = len(shuffled_scenarios)
         
+        self._cycle_idx = 0
+        self._best = None
         self._begin_normal_epoch()
         
-        self._best = None
 
     @property
     def best(self):
@@ -273,8 +253,7 @@ class ScenarioCycler:
             self._reversed = False
         self._shuffled_snames = [s[1] for s in self._shuffled_scenarios]
         self._original_order = [s[0] for s in self._shuffled_scenarios]
-        self._cycle_idx = 0
-        self._cur_ROOTscen = self._shuffled_snames[0]
+        self._cur_ROOTscen = self._shuffled_snames[0] if self.best is None else self.best
         self.create_nodescen_dict()
         
         self._scenarios_this_epoch = set()
@@ -283,8 +262,7 @@ class ScenarioCycler:
         self._reversed = True
         self._shuffled_snames = [s[1] for s in reversed(self._shuffled_scenarios)]
         self._original_order = [s[0] for s in reversed(self._shuffled_scenarios)]
-        self._cycle_idx = 0
-        self._cur_ROOTscen = self._shuffled_snames[0]
+        self._cur_ROOTscen = self._shuffled_snames[0] if self.best is None else self.best
         self.create_nodescen_dict()
         
         self._scenarios_this_epoch = set()

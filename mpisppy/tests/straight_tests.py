@@ -1,0 +1,53 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
+# straight smoke tests (with no unittest, which is a bummer but we need mpiexec)
+
+import os
+
+from mpisppy.tests.utils import get_solver
+solver_available, solver_name, persistent_available, persistent_solver_name= get_solver()
+
+badguys = list()
+
+def _doone(cmdstr):
+    print("testing:", cmdstr)
+    ret = os.system(cmdstr)
+    if ret != 0:
+        badguys.append(f"Test failed with code {ret}:\n{cmdstr}")
+
+#####################################################
+# farmer
+example_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'examples', 'farmer')
+fpath = os.path.join(example_dir, 'farmer_cylinders.py')
+
+cmdstr = f"python {fpath} --help"
+_doone(cmdstr)
+
+cmdstr = f"mpiexec -np 1 python {fpath} --help"
+_doone(cmdstr)
+
+
+# aircond
+example_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'examples', 'aircond')
+fpath = os.path.join(example_dir, 'aircond_cylinders.py')
+jpath = os.path.join(example_dir, 'lagranger_factors.json')
+
+# PH and lagranger rescale factors w/ FWPH
+cmdstr = f"mpiexec -np 4 python -m mpi4py {fpath} --bundles-per-rank=0 --max-iterations=5 --default-rho=1 --solver-name={solver_name} --branching-factors \"4 3 2\" --Capacity 200 --QuadShortCoeff 0.3  --BeginInventory 50 --rel-gap 0.01 --mu-dev 0 --sigma-dev 40 --max-solver-threads 2 --start-seed 0  --lagranger --lagranger-rho-rescale-factors-json {jpath} --fwph --xhatshuffle"
+_doone(cmdstr)
+
+
+#######################################################
+if len(badguys) > 0:
+    print("\nstraight_tests.py failed commands:")
+    for i in badguys:
+        print(i)
+    raise RuntimeError("straight_tests.py had failed commands")
+else:
+    print("straight_test.py: all OK.")

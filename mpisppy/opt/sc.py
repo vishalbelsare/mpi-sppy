@@ -1,3 +1,11 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 from mpisppy.spbase import SPBase
 import pyomo.environ as pyo
 import logging
@@ -5,7 +13,7 @@ import parapint
 from typing import List, Callable, Dict, Optional, Tuple, Any, Union
 from pyomo.core.base.block import _BlockData
 from pyomo.core.base.var import _GeneralVarData
-from mpi4py import MPI
+from mpisppy import MPI
 from mpisppy.utils.sputils import find_active_objective
 
 

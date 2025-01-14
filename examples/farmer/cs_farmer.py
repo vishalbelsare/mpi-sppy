@@ -1,10 +1,15 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 import datetime
 import logging
 import sys
-import os
-import mpi4py.MPI as mpi
+import mpisppy.MPI as mpi
 import copy
 
 # Hub and spoke SPBase classes
@@ -19,7 +24,6 @@ from mpisppy.extensions.extension import MultiExtension
 from mpisppy.extensions.cross_scen_extension import CrossScenarioExtension
 from mpisppy.cylinders.lagrangian_bounder import LagrangianOuterBound
 from mpisppy.cylinders.hub import PHHub 
-from mpisppy.cylinders.cross_scen_hub import CrossScenarioHub
 from mpisppy.cylinders.cross_scen_spoke import CrossScenarioCutSpoke
 from mpisppy.opt.lshaped import LShapedMethod
 
@@ -73,7 +77,7 @@ if __name__ == "__main__":
     }
 
     hub_ph_options = {
-        "solvername": "xpress_persistent",
+        "solver_name": "xpress_persistent",
         'bundles_per_rank': bundles_per_rank,  # 0 = no bundles
         "asynchronousPH": False,
         "PHIterLimit": PHIterLimit,
@@ -94,7 +98,7 @@ if __name__ == "__main__":
 
     # PH hub
     hub_dict = {
-        "hub_class": CrossScenarioHub,
+        "hub_class": PHHub,
         "hub_kwargs": dict(),
         "opt_class": PH,
         "opt_kwargs": {

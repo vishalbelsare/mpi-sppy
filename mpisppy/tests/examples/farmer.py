@@ -1,3 +1,11 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # special for ph debugging DLW Dec 2018
 # unlimited crops
 # ALL INDEXES ARE ZERO-BASED
@@ -23,7 +31,7 @@ farmerstream = np.random.RandomState()
 
 def scenario_creator(
     scenario_name, use_integer=False, sense=pyo.minimize, crops_multiplier=1,
-    num_scens=None
+        num_scens=None, seedoffset=0
 ):
     """ Create a scenario for the (scalable) farmer example.
     
@@ -41,6 +49,7 @@ def scenario_creator(
         num_scens (int, optional):
             Number of scenarios. We use it to compute _mpisppy_probability. 
             Default is None.
+        seedoffset (int): used by confidence interval code
     """
     # scenario_name has the form <str><int> e.g. scen12, foobar7
     # The digits are scraped off the right of scenario_name using regex then
@@ -55,7 +64,7 @@ def scenario_creator(
     # reproducible when used with multiple threads.
     # NOTE: if you want to do replicates, you will need to pass a seed
     # as a kwarg to scenario_creator then use seed+scennum as the seed argument.
-    farmerstream.seed(scennum)
+    farmerstream.seed(scennum+seedoffset)
 
     # Check for minimization vs. maximization
     if sense not in [pyo.minimize, pyo.maximize]:
@@ -78,7 +87,6 @@ def scenario_creator(
             cond_prob=1.0,
             stage=1,
             cost_expression=model.FirstStageCost,
-            scen_name_list=None, # Deprecated?
             nonant_list=[model.DevotedAcreage],
             scen_model=model,
         )
@@ -101,7 +109,7 @@ def pysp_instance_creation_callback(
     scengroupnum = sputils.extract_num(scenario_name)
     scenario_base_name = scenario_name.rstrip("0123456789")
     
-    model = pyo.ConcreteModel()
+    model = pyo.ConcreteModel(scenario_name)
 
     def crops_init(m):
         retval = []
@@ -230,10 +238,11 @@ def pysp_instance_creation_callback(
 
     return model
 
-
+# begin functions not needed by farmer_cylinders
+# (but needed by special codes such as confidence intervals)
 #=========
 def scenario_names_creator(num_scens,start=None):
-    # (only for Amalgomator): return the full list of num_scens scenario names
+    # (only for Amalgamator): return the full list of num_scens scenario names
     # if start!=None, the list starts with the 'start' labeled scenario
     if (start is None) :
         start=0
@@ -242,29 +251,52 @@ def scenario_names_creator(num_scens,start=None):
 
 
 #=========
-def inparser_adder(inparser):
-    # (only for Amalgomator): add command options unique to farmer
-    inparser.add_argument("--crops-multiplier",
-                          help="number of crops will be three times this (default 1)",
-                          dest="crops_multiplier",
-                          type=int,
-                          default=1)
+def inparser_adder(cfg):
+    # add options unique to farmer
+    cfg.num_scens_required()
+    cfg.add_to_config("crops_multiplier",
+                      description="number of crops will be three times this (default 1)",
+                      domain=int,
+                      default=1)
     
-    inparser.add_argument("--farmer-with-integers",
-                          help="make the version that has integers (default False)",
-                          dest="use_integer",
-                          action="store_true",)
-    inparser.set_defaults(use_integer=False)
+    cfg.add_to_config("farmer_with_integers",
+                      description="make the version that has integers (default False)",
+                      domain=bool,
+                      default=False)
 
 
 #=========
 def kw_creator(options):
-    # (only for Amalgomator): linked to the scenario_creator and inparser_adder
-    kwargs = {"use_integer": options['use_integer'] if 'use_integer' in options else False,
-              "crops_multiplier": options['crops_multiplier'] if 'crops_multiplier' in options else 1,
-              "num_scens" : options['num_scens'] if 'num_scens' in options else None,
+    # (only for Amalgamator): linked to the scenario_creator and inparser_adder
+    kwargs = {"use_integer": options.get('use_integer', False),
+              "crops_multiplier": options.get('crops_multiplier', 1),
+              "num_scens" : options.get('num_scens', None),
               }
     return kwargs
+
+def sample_tree_scen_creator(sname, stage, sample_branching_factors, seed,
+                             given_scenario=None, **scenario_creator_kwargs):
+    """ Create a scenario within a sample tree. Mainly for multi-stage and simple for two-stage.
+        (this function supports zhat and confidence interval code)
+    Args:
+        sname (string): scenario name to be created
+        stage (int >=1 ): for stages > 1, fix data based on sname in earlier stages
+        sample_branching_factors (list of ints): branching factors for the sample tree
+        seed (int): To allow random sampling (for some problems, it might be scenario offset)
+        given_scenario (Pyomo concrete model): if not None, use this to get data for ealier stages
+        scenario_creator_kwargs (dict): keyword args for the standard scenario creator funcion
+    Returns:
+        scenario (Pyomo concrete model): A scenario for sname with data in stages < stage determined
+                                         by the arguments
+    """
+    # Since this is a two-stage problem, we don't have to do much.
+    sca = scenario_creator_kwargs.copy()
+    sca["seedoffset"] = seed
+    sca["num_scens"] = sample_branching_factors[0]  # two-stage problem
+    return scenario_creator(sname, **sca)
+
+
+# end functions not needed by farmer_cylinders
 
 
 #============================
@@ -276,4 +308,3 @@ def scenario_denouement(rank, scenario_name, scenario):
         print ("SUGAR_BEETS0 for scenario",sname,"is",
                pyo.value(s.DevotedAcreage["SUGAR_BEETS0"]))
         print ("FirstStageCost for scenario",sname,"is", pyo.value(s.FirstStageCost))
-        

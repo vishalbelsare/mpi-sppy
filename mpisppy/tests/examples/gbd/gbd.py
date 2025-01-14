@@ -1,3 +1,11 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 #ReferenceModel for full set of scenarios for GBD; Aug 2021
 #From original Ferguson and Dantzig 1956
 #Extended scenarios as done in Seq Sampling by B&M
@@ -6,7 +14,7 @@ import pyomo.environ as pyo
 import numpy as np
 import mpisppy.scenario_tree as scenario_tree
 import mpisppy.utils.sputils as sputils
-import mpisppy.utils.amalgomator as amalgomator
+import mpisppy.utils.amalgamator as amalgamator
 import json
 
 # Use this random stream:
@@ -180,7 +188,6 @@ def scenario_creator(sname, num_scens=None):
             cond_prob=1.0,
             stage=1,
             cost_expression=model.obj,
-            scen_name_list=None, # Deprecated?
             nonant_list=[model.x],
             scen_model=model,
         )
@@ -194,7 +201,7 @@ def scenario_creator(sname, num_scens=None):
 
 #=========
 def scenario_names_creator(num_scens,start=None):
-    # (only for Amalgomator): return the full list of num_scens scenario names
+    # (only for Amalgamator): return the full list of num_scens scenario names
     # if start!=None, the list starts with the 'start' labeled scenario
     if (start is None) :
         start=0
@@ -203,13 +210,13 @@ def scenario_names_creator(num_scens,start=None):
 
 #=========
 def inparser_adder(inparser):
-    # (only for Amalgomator): add command options unique to gbd
+    # (only for Amalgamator): add command options unique to gbd
     pass
 
 
 #=========
 def kw_creator(options):
-    # (only for Amalgomator): linked to the scenario_creator and inparser_adder
+    # (only for Amalgamator): linked to the scenario_creator and inparser_adder
     kwargs = {"num_scens" : options['num_scens'] if 'num_scens' in options else None,
               }
     return kwargs
@@ -221,7 +228,7 @@ def scenario_denouement(rank, scenario_name, scenario):
 
 
 #============================
-def xhat_generator_gbd(scenario_names, solvername="gurobi", solver_options=None):
+def xhat_generator_gbd(scenario_names, solver_name="gurobi", solver_options=None):
     '''
     For sequential sampling.
     Takes scenario names as input and provide the best solution for the 
@@ -230,7 +237,7 @@ def xhat_generator_gbd(scenario_names, solvername="gurobi", solver_options=None)
     ----------
     scenario_names: int
         Names of the scenario we use
-    solvername: str, optional
+    solver_name: str, optional
         Name of the solver used. The default is "gurobi"
     solver_options: dict, optional
         Solving options. The default is None.
@@ -244,13 +251,13 @@ def xhat_generator_gbd(scenario_names, solvername="gurobi", solver_options=None)
     num_scens = len(scenario_names)
     
     ama_options = { "EF-2stage": True,
-                    "EF_solver_name": solvername,
+                    "EF_solver_name": solver_name,
                     "EF_solver_options": solver_options,
                     "num_scens": num_scens,
                     "_mpisppy_probability": 1/num_scens,
                     }
-    #We use from_module to build easily an Amalgomator object
-    ama = amalgomator.from_module("mpisppy.tests.examples.gbd.gbd",
+    #We use from_module to build easily an Amalgamator object
+    ama = amalgamator.from_module("mpisppy.tests.examples.gbd.gbd",
                                   ama_options,use_command_line=False)
     #Correcting the building by putting the right scenarios.
     ama.scenario_names = scenario_names
@@ -264,32 +271,32 @@ def xhat_generator_gbd(scenario_names, solvername="gurobi", solver_options=None)
 if __name__ == "__main__":
 
     num_scens = 300
-    solvername = 'gurobi_direct'
+    solver_name = 'gurobi_direct'
     solver_options=None
     
     scenario_names = scenario_names_creator(num_scens,start=6000)
 
     ama_options = { "EF-2stage": True,
-                    "EF_solver_name": solvername,
+                    "EF_solver_name": solver_name,
                     "EF_solver_options": solver_options,
                     "num_scens": num_scens,
                     "_mpisppy_probability": None,
                     }
-    #We use from_module to build easily an Amalgomator object
-    ama = amalgomator.from_module("mpisppy.tests.examples.gbd.gbd",
+    #We use from_module to build easily an Amalgamator object
+    ama = amalgamator.from_module("mpisppy.tests.examples.gbd.gbd",
                                   ama_options,use_command_line=False)
     #Correcting the building by putting the right scenarios.
     ama.scenario_names = scenario_names
     ama.run()
-    print(f"inner bound=", ama.best_inner_bound)
-    print(f"outer bound=", ama.best_outer_bound)
+    print("inner bound=", ama.best_inner_bound)
+    print("outer bound=", ama.best_outer_bound)
 
     xhat = sputils.nonant_cache_from_ef(ama.ef)
     print("xhat=",xhat['ROOT'])
 
     from mpisppy.confidence_intervals.seqsampling import SeqSampling
     optionsFSP = {'eps': 8.0,
-                  'solvername': "gurobi_direct",
+                  'solver_name': "gurobi_direct",
                   "c0":300,
                   "kf_Gs":25,
                   "kf_xhat":25}
@@ -302,7 +309,7 @@ if __name__ == "__main__":
                     "p":0.191,
                     "kf_Gs":25,
                     "kf_xhat":1,
-                    "solvername":"gurobi_direct",
+                    "solver_name":"gurobi_direct",
                     }
     optionsBM_GBD_500 =  { 'h':0.1427,
                     'hprime':0.015, 
@@ -311,7 +318,7 @@ if __name__ == "__main__":
                     "p":0.191,
                     "kf_Gs":25,
                     "kf_xhat":1,
-                    "solvername":"gurobi_direct",
+                    "solver_name":"gurobi_direct",
                     }
 
     gbd_pb = SeqSampling("mpisppy.tests.examples.gbd.gbd",

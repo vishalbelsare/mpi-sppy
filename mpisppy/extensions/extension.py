@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 ''' A template for creating PH_extension.py files
     NOTE: we pass in the ph object, so extensions can wreck everything
     if they want to!
@@ -10,10 +16,40 @@
 '''
 
 class Extension:
-    """ Abstract base class for extensions to general SPOpt objects.
+    """ Abstract base class for extensions to general SPOpt/SPCommunicator objects.
     """
     def __init__(self, spopt_object):
         self.opt = spopt_object
+
+    def setup_hub(self):
+        '''
+        Method called when the Hub SPCommunicator is set up (if used)
+
+        Returns
+        -------
+        None
+        '''
+        pass
+
+    def initialize_spoke_indices(self):
+        '''
+        Method called when the Hub SPCommunicator initializes its spoke indices
+
+        Returns
+        -------
+        None
+        '''
+        pass
+
+    def sync_with_spokes(self):
+        '''
+        Method called when the Hub SPCommunicator syncs with spokes
+
+        Returns
+        -------
+        None
+        '''
+        pass
 
     def pre_solve(self, subproblem):
         '''
@@ -44,11 +80,28 @@ class Extension:
         '''
         return results
 
+    def pre_solve_loop(self):
+        ''' Method called before every solve loop within
+            mpisppy.spot.SPOpt.solve_loop()
+        '''
+        pass
+
+    def post_solve_loop(self):
+        ''' Method called after every solve loop within
+            mpisppy.spot.SPOpt.solve_loop()
+        '''
+        pass
+
     def pre_iter0(self):
-        ''' Method called at the end of PH_Prep().
-            When this method is called, all scenarios have been created, and
+        ''' When this method is called, all scenarios have been created, and
             the dual/prox terms have been attached to the objective, but the
             solvers have not yet been created.
+        '''
+        pass
+
+    def iter0_post_solver_creation(self):
+        ''' When this method is called, PH iteration 0 has been initiated and 
+            all solver objects have been created.
         '''
         pass
 
@@ -60,9 +113,16 @@ class Extension:
         '''
         pass
 
+    def post_iter0_after_sync(self):
+        ''' Method called after the first PH iteration, after the
+            synchronization of sending messages between cylinders
+            has completed.
+        '''
+        pass
+
     def miditer(self):
         ''' Method called after x-bar has been computed and the dual weights
-            have been updated, but before solve_loop(). 
+            have been updated, but before solve_loop().
             If a converger is present, this method is called between the
             convergence_value() method and the is_converged() method.
         '''
@@ -71,6 +131,13 @@ class Extension:
     def enditer(self):
         ''' Method called after the solve_loop(), but before the next x-bar and
             weight update.
+        '''
+        pass
+
+    def enditer_after_sync(self):
+        ''' Method called after the solve_loop(), after the
+            synchronization of sending messages between cylinders
+            has completed.
         '''
         pass
 
@@ -97,13 +164,50 @@ class MultiExtension(Extension):
             name = constr.__name__
             self.extdict[name] = constr(ph)
 
+    def setup_hub(self):
+        for lobject in self.extdict.values():
+            lobject.setup_hub()
+
+    def initialize_spoke_indices(self):
+        for lobject in self.extdict.values():
+            lobject.initialize_spoke_indices()
+
+    def sync_with_spokes(self):
+        for lobject in self.extdict.values():
+            lobject.sync_with_spokes()
+
+    def pre_solve(self, subproblem):
+        for lobject in self.extdict.values():
+            lobject.pre_solve(subproblem)
+
+    def post_solve(self, subproblem, results):
+        for lobject in self.extdict.values():
+            results = lobject.post_solve(subproblem, results)
+        return results
+
+    def pre_solve_loop(self):
+        for lobject in self.extdict.values():
+            lobject.pre_solve_loop()
+
+    def post_solve_loop(self):
+        for lobject in self.extdict.values():
+            lobject.post_solve_loop()
+
     def pre_iter0(self):
         for lobject in self.extdict.values():
             lobject.pre_iter0()
-                                        
+
+    def iter0_post_solver_creation(self):
+        for lobject in self.extdict.values():
+            lobject.iter0_post_solver_creation()        
+
     def post_iter0(self):
         for lobject in self.extdict.values():
             lobject.post_iter0()
+
+    def post_iter0_after_sync(self):
+        for lobject in self.extdict.values():
+            lobject.post_iter0_after_sync()
 
     def miditer(self):
         for lobject in self.extdict.values():
@@ -112,6 +216,10 @@ class MultiExtension(Extension):
     def enditer(self):
         for lobject in self.extdict.values():
             lobject.enditer()
+
+    def enditer_after_sync(self):
+        for lobject in self.extdict.values():
+            lobject.enditer_after_sync()
 
     def post_everything(self):
         for lobject in self.extdict.values():

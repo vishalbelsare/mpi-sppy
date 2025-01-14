@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # Provide some test for aph under mpi-sppy.
 # Author: David L. Woodruff (started circa September 2019)
 #         add farmer tests April 2021
@@ -11,19 +17,17 @@ version matter a lot, so we often just do smoke tests for sizes.
 
 import unittest
 from math import log10, floor
-import pyomo.environ as pyo
 import mpisppy.opt.aph
 import mpisppy.phbase
 from mpisppy.tests.examples.sizes.sizes import scenario_creator, \
-                                               scenario_denouement, \
-                                               _rho_setter
+                                               scenario_denouement
 import mpisppy.tests.examples.farmer as farmer
-from mpisppy.tests.test_utils import get_solver, round_pos_sig
+from mpisppy.tests.utils import get_solver
+import mpisppy.MPI as mpi
 
 __version__ = 0.6
-solver_available,solvername, persistent_available, persistentsolvername= get_solver()
+solver_available, solver_name, persistent_available, persistent_solver_name= get_solver()
 
-import mpi4py.MPI as mpi
 fullcomm = mpi.COMM_WORLD
 global_rank = fullcomm.Get_rank()
 
@@ -34,7 +38,7 @@ class Test_aph_sizes(unittest.TestCase):
     def setUp(self):
         self.Baseoptions = {}
         self.Baseoptions["asynchronousPH"] = False
-        self.Baseoptions["solvername"] = solvername
+        self.Baseoptions["solver_name"] = solver_name
         self.Baseoptions["PHIterLimit"] = 10
         self.Baseoptions["defaultPHrho"] = 1
         self.Baseoptions["convthresh"] = 0.001
@@ -74,9 +78,10 @@ class Test_aph_sizes(unittest.TestCase):
             scenario_denouement,
             scenario_creator_kwargs={"scenario_count": 3},
         )
+        assert aph is not None
 
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_aph_basic(self):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 2
@@ -113,7 +118,7 @@ class Test_aph_sizes(unittest.TestCase):
 
         
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_APHgamma(self):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 2
@@ -135,13 +140,12 @@ class Test_aph_sizes(unittest.TestCase):
 
 
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_use_lag(self):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 2
         options["async_frac_needed"] = 0.5
         options["async_sleep_secs"] = 0.5
-        a = 2
         options["APHuse_lag"] = True
         aph = mpisppy.opt.aph.APH(
             options,
@@ -157,7 +161,7 @@ class Test_aph_sizes(unittest.TestCase):
 
 
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_running_dump(self):
         # just see if "display_convergence_detail" causes a crash
         options = self._copy_of_base_options()
@@ -200,7 +204,7 @@ class Test_aph_farmer(unittest.TestCase):
     def setUp(self):
         self.Baseoptions = {}
         self.Baseoptions["asynchronousPH"] = False
-        self.Baseoptions["solvername"] = solvername
+        self.Baseoptions["solver_name"] = solver_name
         self.Baseoptions["PHIterLimit"] = 10
         self.Baseoptions["defaultPHrho"] = 1
         self.Baseoptions["convthresh"] = 0.001
@@ -226,7 +230,7 @@ class Test_aph_farmer(unittest.TestCase):
         return [f"Scenario{i+1}" for i in range(cnt)]
         
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_aph_farmer_basic30(self):
         Aoptions = self._copy_of_base_options()
         Aoptions["PHIterLimit"] = 2
@@ -253,7 +257,7 @@ class Test_aph_farmer(unittest.TestCase):
         self.assertEqual(objgot, objtarget)
 
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_aph_farmer_dispatch(self):
         Aoptions = self._copy_of_base_options()
         Aoptions["PHIterLimit"] = 2
@@ -281,7 +285,7 @@ class Test_aph_farmer(unittest.TestCase):
 
 
     @unittest.skipIf(not solver_available,
-                     "%s solver is not available" % (solvername,))
+                     "%s solver is not available" % (solver_name,))
     def test_aph_farmer_dispatch_bundles(self):
         Aoptions = self._copy_of_base_options()
         Aoptions["PHIterLimit"] = 2

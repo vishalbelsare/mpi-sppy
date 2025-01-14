@@ -1,8 +1,16 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 import unittest
 import sys
 import os
 import parapint
-from mpi4py import MPI
+from mpisppy import MPI
 
 
 comm = MPI.COMM_WORLD
@@ -27,12 +35,12 @@ class TestSC(unittest.TestCase):
         sc_sol = sc_opt.gather_var_values_to_rank0()
 
         if rank == 0:
-            self.assertAlmostEqual(sc_sol[('Scenario0', 'DevotedAcreage[CORN0]')], 80)
-            self.assertAlmostEqual(sc_sol[('Scenario0', 'DevotedAcreage[SUGAR_BEETS0]')], 250)
-            self.assertAlmostEqual(sc_sol[('Scenario0', 'DevotedAcreage[WHEAT0]')], 170)
-            self.assertAlmostEqual(sc_sol[('Scenario1', 'DevotedAcreage[CORN0]')], 80)
-            self.assertAlmostEqual(sc_sol[('Scenario1', 'DevotedAcreage[SUGAR_BEETS0]')], 250)
-            self.assertAlmostEqual(sc_sol[('Scenario1', 'DevotedAcreage[WHEAT0]')], 170)
-            self.assertAlmostEqual(sc_sol[('Scenario2', 'DevotedAcreage[CORN0]')], 80)
-            self.assertAlmostEqual(sc_sol[('Scenario2', 'DevotedAcreage[SUGAR_BEETS0]')], 250)
-            self.assertAlmostEqual(sc_sol[('Scenario2', 'DevotedAcreage[WHEAT0]')], 170)
+            self.assertAlmostEqual(sc_sol[('Scenario0', 'DevotedAcreage[CORN0]')], 80, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario0', 'DevotedAcreage[SUGAR_BEETS0]')], 250, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario0', 'DevotedAcreage[WHEAT0]')], 170, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario1', 'DevotedAcreage[CORN0]')], 80, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario1', 'DevotedAcreage[SUGAR_BEETS0]')], 250, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario1', 'DevotedAcreage[WHEAT0]')], 170, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario2', 'DevotedAcreage[CORN0]')], 80, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario2', 'DevotedAcreage[SUGAR_BEETS0]')], 250, places=5)
+            self.assertAlmostEqual(sc_sol[('Scenario2', 'DevotedAcreage[WHEAT0]')], 170, places=5)

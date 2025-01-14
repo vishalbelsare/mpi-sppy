@@ -1,6 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
-# Provide some test for mpisppy.0
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # Author: David L. Woodruff (circa January 2019)
 """
 IMPORTANT:
@@ -9,28 +14,32 @@ version matter a lot, so we often just do smoke tests.
 """
 
 import os
-import pandas as pd
+import glob
+import json
 import unittest
-
+import pandas as pd
 import pyomo.environ as pyo
 import mpisppy.opt.ph
 import mpisppy.phbase
 import mpisppy.utils.sputils as sputils
+import mpisppy.utils.rho_utils as rho_utils
 from mpisppy.tests.examples.sizes.sizes import scenario_creator, \
                                                scenario_denouement, \
                                                _rho_setter
 import mpisppy.tests.examples.hydro.hydro as hydro
+from mpisppy.extensions.mult_rho_updater import MultRhoUpdater
 from mpisppy.extensions.xhatspecific import XhatSpecific
-from mpisppy.tests.test_utils import get_solver,round_pos_sig
+from mpisppy.extensions.xhatxbar import XhatXbar
+from mpisppy.tests.utils import get_solver,round_pos_sig
 
-__version__ = 0.54
+__version__ = 0.55
 
-solver_available,solvername, persistent_available, persistentsolvername= get_solver()
+solver_available,solver_name, persistent_available, persistent_solver_name= get_solver()
 
 def _get_ph_base_options():
     Baseoptions = {}
     Baseoptions["asynchronousPH"] = False
-    Baseoptions["solvername"] = solvername
+    Baseoptions["solver_name"] = solver_name
     Baseoptions["PHIterLimit"] = 10
     Baseoptions["defaultPHrho"] = 1
     Baseoptions["convthresh"] = 0.001
@@ -38,7 +47,7 @@ def _get_ph_base_options():
     Baseoptions["verbose"] = False
     Baseoptions["display_timing"] = False
     Baseoptions["display_progress"] = False
-    if "cplex" in solvername:
+    if "cplex" in solver_name:
         Baseoptions["iter0_solver_options"] = {"mip_tolerances_mipgap": 0.001}
         Baseoptions["iterk_solver_options"] = {"mip_tolerances_mipgap": 0.00001}
     else:
@@ -84,7 +93,7 @@ class Test_sizes(unittest.TestCase):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 0
 
-        ph = mpisppy.opt.ph.PH(
+        mpisppy.opt.ph.PH(
             options,
             self.all3_scenario_names,
             scenario_creator,
@@ -106,6 +115,7 @@ class Test_sizes(unittest.TestCase):
             scenario_denouement,
             scenario_creator_kwargs={"scenario_count": 3},
         )
+        assert ph is not None
 
     def test_ef_constructor(self):
         ScenCount = 3
@@ -115,12 +125,13 @@ class Test_sizes(unittest.TestCase):
             scenario_creator_kwargs={"scenario_count": ScenCount},
             suppress_warnings=True
         )
+        assert ef is not None
 
     @unittest.skipIf(not solver_available,
                      "no solver is available")
     def test_ef_solve(self):
         options = self._copy_of_base_options()
-        solver = pyo.SolverFactory(options["solvername"])
+        solver = pyo.SolverFactory(options["solver_name"])
         ScenCount = 3
         ef = mpisppy.utils.sputils.create_EF(
             self.all3_scenario_names,
@@ -128,9 +139,10 @@ class Test_sizes(unittest.TestCase):
             scenario_creator_kwargs={"scenario_count": ScenCount},
             suppress_warnings=True
         )
-        if '_persistent' in options["solvername"]:
+        if '_persistent' in options["solver_name"]:
             solver.set_instance(ef)
         results = solver.solve(ef, tee=False)
+        pyo.assert_optimal_termination(results)
         sig2eobj = round_pos_sig(pyo.value(ef.EF_Obj),2)
         self.assertEqual(220000.0, sig2eobj)
 
@@ -138,17 +150,17 @@ class Test_sizes(unittest.TestCase):
                      "no solver is available")
     def test_fix_ef_solve(self):
         options = self._copy_of_base_options()
-        solver = pyo.SolverFactory(options["solvername"])
+        solver = pyo.SolverFactory(options["solver_name"])
         ScenCount = 3
         ef = mpisppy.utils.sputils.create_EF(
             self.all3_scenario_names,
             self._fix_creator,
             scenario_creator_kwargs={"scenario_count": ScenCount},
         )
-        if '_persistent' in options["solvername"]:
+        if '_persistent' in options["solver_name"]:
             solver.set_instance(ef)
         results = solver.solve(ef, tee=False)
-        sig2eobj = round_pos_sig(pyo.value(ef.EF_Obj),2)
+        pyo.assert_optimal_termination(results)
         # the fix creator fixed num prod first stage for size 5 to 1134
         self.assertEqual(pyo.value(ef.Scenario1.NumProducedFirstStage[5]), 1134)
 
@@ -167,9 +179,6 @@ class Test_sizes(unittest.TestCase):
         )
     
         conv, obj, tbound = ph.ph_main()
-
-        sig2obj = round_pos_sig(obj,2)
-        #self.assertEqual(1400000000, sig2obj)
 
     @unittest.skipIf(not solver_available,
                      "no solver is available")
@@ -239,8 +248,33 @@ class Test_sizes(unittest.TestCase):
             rho_setter=_rho_setter,
         )
         conv, obj, tbound = ph.ph_main()
-        sig2obj = round_pos_sig(obj,2)
-        #self.assertEqual(220000.0, sig2obj)
+        sig1obj = round_pos_sig(obj,1)
+        self.assertEqual(200000.0, sig1obj)
+
+        
+    @unittest.skipIf(not solver_available,
+                     "no solver is available")
+    def test_ph_write_read(self):
+        options = self._copy_of_base_options()
+        options["PHIterLimit"] = 2
+        ph = mpisppy.opt.ph.PH(
+            options,
+            self.all3_scenario_names,
+            scenario_creator,
+            scenario_denouement,
+            scenario_creator_kwargs={"scenario_count": 3},
+            rho_setter=_rho_setter,
+        )
+        conv, obj, tbound = ph.ph_main()
+        # The rho_setter is called after iter0
+        fname = "__1134__.csv"
+        s = ph.local_scenarios[list(ph.local_scenarios.keys())[0]]
+        rholen = len(s._mpisppy_model.rho)
+        rho_utils.rhos_to_csv(s, fname)
+        rholist = rho_utils.rho_list_from_csv(s, fname)
+        os.remove(fname)
+        self.assertEqual(len(rholist), rholen)  # not a deep test...
+
         
     @unittest.skipIf(not solver_available,
                      "no solver is available")
@@ -258,7 +292,7 @@ class Test_sizes(unittest.TestCase):
         conv, obj, tbound = ph.ph_main()
 
     @unittest.skipIf(not persistent_available,
-                     "%s solver is not available" % (persistentsolvername,))
+                     "%s solver is not available" % (persistent_solver_name,))
     def test_persistent_basic(self):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 10
@@ -273,7 +307,7 @@ class Test_sizes(unittest.TestCase):
 
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 10
-        options["solvername"] = persistentsolvername
+        options["solver_name"] = persistent_solver_name
         ph = mpisppy.opt.ph.PH(
             options,
             self.all3_scenario_names,
@@ -288,7 +322,7 @@ class Test_sizes(unittest.TestCase):
         self.assertEqual(sig2basic, sig2pobj)
         
     @unittest.skipIf(not persistent_available,
-                     "%s solver is not available" % (persistentsolvername,))
+                     "%s solver is not available" % (persistent_solver_name,))
     def test_persistent_bundles(self):
         """ This excercises complicated code.
         """
@@ -307,7 +341,7 @@ class Test_sizes(unittest.TestCase):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 2
         options["bundles_per_rank"] = 2
-        options["solvername"] = persistentsolvername
+        options["solver_name"] = persistent_solver_name
         ph = mpisppy.opt.ph.PH(
             options,
             self.all10_scenario_names,
@@ -346,6 +380,93 @@ class Test_sizes(unittest.TestCase):
         xhatobj1 = round_pos_sig(ph.extobject._xhat_looper_obj_final, 1)
         self.assertEqual(xhatobj1, 200000)
 
+
+    @unittest.skipIf(not pyo.SolverFactory('glpk').available(),
+                     "glpk is not available")
+    def test_scenario_lpwriter_extension(self):
+        print("test scenarip_lpwriter")
+        from mpisppy.extensions.scenario_lpfiles import Scenario_lpfiles
+        options = self._copy_of_base_options()
+        options["iter0_solver_options"] = {"mipgap": 0.1}    
+        options["PHIterLimit"] = 0
+        options["solver_name"] = "glpk"
+        options["tee_rank0_solves"] = True
+
+        ph = mpisppy.opt.ph.PH(
+            options,
+            self.all3_scenario_names,
+            scenario_creator,
+            scenario_denouement,
+            scenario_creator_kwargs={"scenario_count": 3},
+            extensions=Scenario_lpfiles,
+        )
+        conv, basic_obj, tbound = ph.ph_main()
+        # The idea is to detect a change in Pyomo's writing of lp files
+        with open("Scenario1_nonants.json", "r") as jfile:
+            nonants_by_node = json.load(jfile)
+        vname = nonants_by_node["ROOT"][0]  # first name in the file
+        gotit = False
+        with open("Scenario1.lp", 'r') as lpfile:
+            for line in lpfile:
+                if vname in line:
+                    gotit = True
+                    break
+        assert gotit, f"The first nonant in Scenario1_nonants.json ({vname}) not found in Scenario1.lp"
+        print("   deleting Scenario*.p and Scenario*_nonants.json")        
+        for fn in glob.glob("Scenario*.lp"):
+            os.remove(fn)
+        for fn in glob.glob("Scenario*_nonants.json"):
+            os.remove(fn)
+        
+        
+    @unittest.skipIf(not solver_available,
+                     "no solver is available")
+    def test_wtracker_extension(self):
+        """ Make sure the wtracker at least does not cause a stack trace
+        """
+        from mpisppy.extensions.wtracker_extension import Wtracker_extension
+        options = self._copy_of_base_options()
+        options["PHIterLimit"] = 4
+        options["wtracker_options"] ={"wlen": 3,
+                                      "reportlen": 6,
+                                      "stdevthresh": 0.1,
+                                      "file_prefix": "__1134__"}
+        ph = mpisppy.opt.ph.PH(
+            options,
+            self.all3_scenario_names,
+            scenario_creator,
+            scenario_denouement,
+            scenario_creator_kwargs={"scenario_count": 3},
+            extensions=Wtracker_extension,
+        )
+        conv, basic_obj, tbound = ph.ph_main()
+        fileList = glob.glob('__1134__*.csv')
+        for filePath in fileList:
+            os.remove(filePath)
+
+    @unittest.skipIf(not solver_available,
+                     "no solver is available")
+    def test_wtracker_lacks_iters(self):
+        """ Make sure the wtracker is graceful with not enough data
+        """
+        from mpisppy.extensions.wtracker_extension import Wtracker_extension
+        options = self._copy_of_base_options()
+        options["PHIterLimit"] = 4
+        options["wtracker_options"] ={"wlen": 10,
+                                      "reportlen": 6,
+                                      "stdevthresh": 0.1}
+
+        ph = mpisppy.opt.ph.PH(
+            options,
+            self.all3_scenario_names,
+            scenario_creator,
+            scenario_denouement,
+            scenario_creator_kwargs={"scenario_count": 3},
+            extensions=Wtracker_extension,
+        )
+        conv, basic_obj, tbound = ph.ph_main()
+        
+
     @unittest.skipIf(not solver_available,
                      "no solver is available")
     def test_fix_xhat_extension(self):
@@ -375,8 +496,8 @@ class Test_sizes(unittest.TestCase):
             
     @unittest.skipIf(not solver_available,
                      "no solver is available")
-    def test_lagrangian_bound(self):
-        """ Make sure the lagrangian bound is at least a bound
+    def test_xhatlooper_bound(self):
+        """ smoke test for the looper as an extension
         """
         from mpisppy.extensions.xhatlooper import XhatLooper
         options = self._copy_of_base_options()
@@ -411,12 +532,12 @@ class Test_sizes(unittest.TestCase):
 
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 2
+        multi_ext = {"ext_classes": [Fixer, Gapper, XhatLooper, XhatClosest]}
         ph = mpisppy.opt.ph.PH(options, self.all3_scenario_names,
                                     scenario_creator, scenario_denouement,
                                     extensions=MultiExtension,
                                     extension_kwargs=multi_ext,
         )
-        multi_ext = {"ext_classes": [Fixer, Gapper, XhatLooper, XhatClosest]}
         conv, basic_obj, tbound = ph.ph_main()
 
 
@@ -432,17 +553,40 @@ class Test_sizes(unittest.TestCase):
         from mpisppy.extensions.xhatclosest import XhatClosest
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 2
+        multi_ext = {"ext_classes": [Fixer, Gapper, XhatLooper, XhatClosest]}
         ph = mpisppy.opt.ph.PH(options, self.all3_scenario_names,
                                     self._fix_creator, scenario_denouement,
                                     extensions=MultiExtension,
                                     extension_kwargs=multi_ext,
         )
-        multi_ext = {"ext_classes": [Fixer, Gapper, XhatLooper, XhatClosest]}
         conv, basic_obj, tbound = ph.ph_main( )
         for k,s in ph.local_scenarios.items():
             self.assertTrue(s.NumProducedFirstStage[5].is_fixed())
             self.assertEqual(pyo.value(s.NumProducedFirstStage[5]), 1134)
 
+
+    @unittest.skipIf(not solver_available,
+                     "no solver is available")
+    def test_ph_xhat_xbar(self):
+        options = self._copy_of_base_options()
+        options["PHIterLimit"] = 5
+        options["xhat_xbar_options"] = {"xhat_solver_options":
+                                        options["iterk_solver_options"],
+                                        "csvname": "xhatxbar.csv"}
+
+        ph = mpisppy.opt.ph.PH(
+            options,
+            self.all3_scenario_names,
+            scenario_creator,
+            scenario_denouement,
+            scenario_creator_kwargs={"scenario_count": 3},
+            extensions = XhatXbar
+        )
+        conv, obj, tbound = ph.ph_main()
+        sig2obj = round_pos_sig(obj,2)
+        self.assertEqual(sig2obj, 230000)
+
+            
 #*****************************************************************************
 class Test_hydro(unittest.TestCase):
     """ Test the mpisppy code using hydro (three stages)."""
@@ -475,6 +619,7 @@ class Test_hydro(unittest.TestCase):
             all_nodenames=self.all_nodenames,
             scenario_creator_kwargs={"branching_factors": self.branching_factors},
         )
+        assert ph is not None
 
     def test_ef_constructor(self):
         ef = mpisppy.utils.sputils.create_EF(
@@ -482,20 +627,22 @@ class Test_hydro(unittest.TestCase):
             hydro.scenario_creator,
             scenario_creator_kwargs={"branching_factors": self.branching_factors},
         )
+        assert ef is not None
 
     @unittest.skipIf(not solver_available,
                      "no solver is available")
     def test_ef_solve(self):
         options = self._copy_of_base_options()
-        solver = pyo.SolverFactory(options["solvername"])
+        solver = pyo.SolverFactory(options["solver_name"])
         ef = mpisppy.utils.sputils.create_EF(
             self.all_scenario_names,
             hydro.scenario_creator,
             scenario_creator_kwargs={"branching_factors": self.branching_factors},
         )
-        if '_persistent' in options["solvername"]:
+        if '_persistent' in options["solver_name"]:
             solver.set_instance(ef)
         results = solver.solve(ef, tee=False)
+        pyo.assert_optimal_termination(results)
         mpisppy.utils.sputils.ef_nonants_csv(ef, "delme.csv")
 
         df = pd.read_csv("delme.csv", index_col=1)
@@ -508,15 +655,16 @@ class Test_hydro(unittest.TestCase):
                      "no solver is available")
     def test_ef_csv(self):
         options = self._copy_of_base_options()
-        solver = pyo.SolverFactory(options["solvername"])
+        solver = pyo.SolverFactory(options["solver_name"])
         ef = mpisppy.utils.sputils.create_EF(
             self.all_scenario_names,
             hydro.scenario_creator,
             scenario_creator_kwargs={"branching_factors": self.branching_factors},
         )
-        if '_persistent' in options["solvername"]:
+        if '_persistent' in options["solver_name"]:
             solver.set_instance(ef)
         results = solver.solve(ef, tee=False)
+        pyo.assert_optimal_termination(results)
     
 
     @unittest.skipIf(not solver_available,
@@ -544,7 +692,7 @@ class Test_hydro(unittest.TestCase):
         
     @unittest.skipIf(not solver_available,
                      "no solver is available")
-    def test_ph_xhat(self):
+    def test_ph_xhat_specific(self):
         options = self._copy_of_base_options()
         options["PHIterLimit"] = 10  # xhat is feasible
         options["xhat_specific_options"] = {"xhat_solver_options":
@@ -570,5 +718,32 @@ class Test_hydro(unittest.TestCase):
         self.assertEqual(190, sig2xhatobj)
 
 
+    @unittest.skipIf(not solver_available,
+                     "no solver is available")
+    def test_ph_mult_rho_updater(self):
+        options = self._copy_of_base_options()
+        options["PHIterLimit"] = 5
+        options["mult_rho_options"] = {'convergence_tolerance' : 1e-4,
+                                       'rho_update_stop_iteration' : 4,
+                                       'rho_update_start_iteration' : 1,
+                                       'verbose' : False,
+                                       }
+
+        ph = mpisppy.opt.ph.PH(
+            options,
+            self.all_scenario_names,
+            hydro.scenario_creator,
+            hydro.scenario_denouement,
+            all_nodenames=self.all_nodenames,
+            scenario_creator_kwargs={"branching_factors": self.branching_factors},
+            extensions = MultRhoUpdater,
+        )
+        conv, obj, tbound = ph.ph_main()
+        obj2 = round_pos_sig(obj, 2)
+        self.assertEqual(210, obj2)
+
+        
+# MultRhoUpdater
+        
 if __name__ == '__main__':
     unittest.main()

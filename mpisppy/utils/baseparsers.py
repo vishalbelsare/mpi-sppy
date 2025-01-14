@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # set up the most common parser args for mpi-sppy examples
 """ NOTE TO NEW USERS: just using these parsers will not, itself, do anything.
     You have to use the values when you create the dictionaries that are passed
@@ -162,18 +168,6 @@ def _basic_multistage(progname=None, num_scens_reqd=False):
                         type=int,
                         default=None)
         
-    if num_scens_reqd:
-        parser.add_argument(
-            "num_scens", help="Number of scenarios", type=int
-        )
-    else:
-        parser.add_argument(
-            "--num-scens",
-            help="Number of scenarios (default None)",
-            dest="num_scens",
-            type=int,
-            default=None,
-        )
     return parser
 
 
@@ -263,10 +257,16 @@ def two_sided_args(inparser):
                         default=0.05)
 
     parser.add_argument("--abs-gap",
-                        help="absolute termination gap (default 8)",
+                        help="absolute termination gap (default 0)",
                         dest="abs_gap",
                         type=float,
-                        default=8.)
+                        default=0.)
+    
+    parser.add_argument("--max-stalled-iters",
+                        help="maximum iterations with no reduction in gap (default 100)",
+                        dest="max_stalled_iters",
+                        type=int,
+                        default=100)
 
     return parser
 
@@ -432,7 +432,7 @@ def lagranger_args(inparser):
     parser.add_argument("--lagranger-rho-rescale-factors-json",
                         help="json file: rho rescale factors (default None)",
                         dest="lagranger_rho_rescale_factors_json",
-                        type=float,
+                        type=str,
                         default=None)
 
     return parser
@@ -514,33 +514,33 @@ def xhatlshaped_args(inparser):
 
     return parser
 
-def slamup_args(inparser):
+def slammax_args(inparser):
     # we will not try to get the specification from the command line
     parser = inparser
-    parser.add_argument('--with-slamup',
-                        help="have an slamup spoke (default)",
-                        dest='with_slamup',
+    parser.add_argument('--with-slammax',
+                        help="have an slammax spoke (default)",
+                        dest='with_slammax',
                         action='store_true')
-    parser.add_argument('--no-slamup',
-                        help="do not have an slamup spoke",
-                        dest='with_slamup',
+    parser.add_argument('--no-slammax',
+                        help="do not have an slammax spoke",
+                        dest='with_slammax',
                         action='store_false')
-    parser.set_defaults(with_slamup=True)
+    parser.set_defaults(with_slammax=True)
 
     return parser
 
-def slamdown_args(inparser):
+def slammin_args(inparser):
     # we will not try to get the specification from the command line
     parser = inparser
-    parser.add_argument('--with-slamdown',
-                        help="have an slamdown spoke (default)",
-                        dest='with_slamdown',
+    parser.add_argument('--with-slammin',
+                        help="have an slammin spoke (default)",
+                        dest='with_slammin',
                         action='store_true')
-    parser.add_argument('--no-slamdown',
-                        help="do not have an slamdown spoke",
-                        dest='with_slamdown',
+    parser.add_argument('--no-slammin',
+                        help="do not have an slammin spoke",
+                        dest='with_slammin',
                         action='store_false')
-    parser.set_defaults(with_slamdown=True)
+    parser.set_defaults(with_slammin=True)
 
     return parser
 

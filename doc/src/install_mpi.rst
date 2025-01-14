@@ -12,7 +12,7 @@ Here are two methods that seem to work well for installation, at least when cons
 
    * ``conda install openmpi; conda install mpi4py``  (in that order)
   
-#. If you already have an existing version of MPI, it may be better compile mpi4py against it. This can be done by installing mpi4py though pip.
+#. If you already have an existing version of MPI, it may be better compile mpi4py against it. This can be done by installing mpi4py through pip.
 
    * ``pip install mpi4py``
 
@@ -27,6 +27,16 @@ installation that will work well. Note that even if there is
 an error message, mpi-sppy may still execute and return correct
 results. Per the comment below, the run-times may just be 
 unnecessarily inflated.
+
+no MPI?
+^^^^^^^
+
+If you can't get MPI and mpi4py, some functionality is still
+available. In particular, it is possible to solve the EF
+directly. (See :ref:`no mpi4py` for a little more
+information.)  However, most of the examples and most of the
+documentation assumes you have mpi4py installed and running correctly.
+
 
 AN IMPORTANT NOTE FOR MPICH USERS ON HPC PLATFORMS
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

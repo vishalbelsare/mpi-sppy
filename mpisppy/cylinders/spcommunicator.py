@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 """ Conventional wisdom seems to be that we should use Put calls locally (i.e.
     a process should Put() into its own buffer), and Get calls for
     communication (i.e. call Get on a remote target, rather than your local
@@ -15,15 +21,19 @@
 import numpy as np
 import abc
 import time
-from mpi4py import MPI
+from mpisppy import MPI
+
+
+def communicator_array(size):
+    arr = np.empty(size+1)
+    arr[:] = np.nan
+    arr[-1] = 0
+    return arr
 
 
 class SPCommunicator:
     """ Notes: TODO
     """
-
-    # magic constant for spoke_sleep_time calculation below
-    _SLEEP_TIME_MUTLIPLIER = 1e-5
 
     def __init__(self, spbase_object, fullcomm, strata_comm, cylinder_comm, options=None):
         # flag for if the windows have been constructed
@@ -41,11 +51,6 @@ class SPCommunicator:
             self.options = dict()
         else:
             self.options = options
-
-        self.spoke_sleep_time = self.options.get('spoke_sleep_time')
-        # the user could set None
-        if self.spoke_sleep_time is None:
-                self.spoke_sleep_time = self._SLEEP_TIME_MUTLIPLIER * spbase_object.nonant_length
 
         # attach the SPCommunicator to
         # the SPBase object
@@ -77,22 +82,11 @@ class SPCommunicator:
     def hub_finalize(self):
         """ Every hub may have another finalize function,
             which collects any results from finalize
-
-            Spokes use the implementation below, which just
-            puts a small sleep in so windows are not freed
-            too soon.
         """
-        ## give the hub the chance to catch new values
-        time.sleep(self.spoke_sleep_time)
+        pass
 
     def allreduce_or(self, val):
-        local_val = np.array([val], dtype='int8')
-        global_val = np.zeros(1, dtype='int8')
-        self.cylinder_comm.Allreduce(local_val, global_val, op=MPI.LOR)
-        if global_val[0] > 0:
-            return True
-        else:
-            return False
+        return self.opt.allreduce_or(val)
 
     def free_windows(self):
         """
@@ -129,5 +123,6 @@ class SPCommunicator:
         size = MPI.DOUBLE.size * (length + 1)
         window = MPI.Win.Allocate(size, MPI.DOUBLE.size, comm=comm)
         buff = np.ndarray(dtype="d", shape=(length + 1,), buffer=window.tomemory())
+        buff[:] = np.nan
         buff[-1] = 0. # Initialize the write number to zero
         return window, buff

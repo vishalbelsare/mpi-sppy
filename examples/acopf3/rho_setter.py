@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # January 2020; rho_setter for ccopf from n-1 stuff of a few years ago 
 
 def generator_p_cost(md, g, output_level):
@@ -37,7 +43,6 @@ def ph_rhosetter_callback(scen):
             mid = lb + (ub - lb)/2.0
             cost_at_mid = generator_p_cost(scen._egret_md, egen, mid)
             rho = cost_at_mid * MyRhoFactor
-            print ("dlw debug: pgen={}, rho={}".format(pgen, rho))
             idv = id(pgen)
             retlist.append((idv, rho))
             qgen = scen.stage_models[stage].qg[egen]

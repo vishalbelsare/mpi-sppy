@@ -1,3 +1,11 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 #ReferenceModel for full set of scenarios for APL1P; May 2021
 #We use costs from Bailey, Jensen and Morton, Response Surface Analysis of Two-Stage Stochastic Linear Programming with Recourse
 #(costs are 10x higher than in the original [Infanger 1992] paper)
@@ -6,7 +14,7 @@ import pyomo.environ as pyo
 import numpy as np
 import mpisppy.scenario_tree as scenario_tree
 import mpisppy.utils.sputils as sputils
-import mpisppy.utils.amalgomator as amalgomator
+import mpisppy.utils.amalgamator as amalgamator
 
 # Use this random stream:
 apl1pstream = np.random.RandomState()
@@ -159,7 +167,6 @@ def scenario_creator(sname, num_scens=None):
             cond_prob=1.0,
             stage=1,
             cost_expression=model.Total_Cost_Objective,
-            scen_name_list=None, # Deprecated?
             nonant_list=[model.CapacityGenerators], 
             scen_model=model,
         )
@@ -174,7 +181,7 @@ def scenario_creator(sname, num_scens=None):
 
 #=========
 def scenario_names_creator(num_scens,start=None):
-    # (only for Amalgomator): return the full list of num_scens scenario names
+    # (only for Amalgamator): return the full list of num_scens scenario names
     # if start!=None, the list starts with the 'start' labeled scenario
     if (start is None) :
         start=0
@@ -183,13 +190,13 @@ def scenario_names_creator(num_scens,start=None):
 
 #=========
 def inparser_adder(inparser):
-    # (only for Amalgomator): add command options unique to apl1p
+    # (only for Amalgamator): add command options unique to apl1p
     pass
 
 
 #=========
 def kw_creator(options):
-    # (only for Amalgomator): linked to the scenario_creator and inparser_adder
+    # (only for Amalgamator): linked to the scenario_creator and inparser_adder
     kwargs = {"num_scens" : options['num_scens'] if 'num_scens' in options else None,
               }
     return kwargs
@@ -201,7 +208,7 @@ def scenario_denouement(rank, scenario_name, scenario):
 
 
 #============================
-def xhat_generator_apl1p(scenario_names, solvername="gurobi", solver_options=None):
+def xhat_generator_apl1p(scenario_names, solver_name="gurobi", solver_options=None):
     '''
     For sequential sampling.
     Takes scenario names as input and provide the best solution for the 
@@ -210,7 +217,7 @@ def xhat_generator_apl1p(scenario_names, solvername="gurobi", solver_options=Non
     ----------
     scenario_names: int
         Names of the scenario we use
-    solvername: str, optional
+    solver_name: str, optional
         Name of the solver used. The default is "gurobi"
     solver_options: dict, optional
         Solving options. The default is None.
@@ -224,13 +231,13 @@ def xhat_generator_apl1p(scenario_names, solvername="gurobi", solver_options=Non
     num_scens = len(scenario_names)
     
     ama_options = { "EF-2stage": True,
-                    "EF_solver_name": solvername,
+                    "EF_solver_name": solver_name,
                     "EF_solver_options": solver_options,
                     "num_scens": num_scens,
                     "_mpisppy_probability": 1/num_scens,
                     }
-    #We use from_module to build easily an Amalgomator object
-    ama = amalgomator.from_module("mpisppy.tests.examples.apl1p",
+    #We use from_module to build easily an Amalgamator object
+    ama = amalgamator.from_module("mpisppy.tests.examples.apl1p",
                                   ama_options,use_command_line=False)
     #Correcting the building by putting the right scenarios.
     ama.scenario_names = scenario_names
@@ -245,7 +252,7 @@ if __name__ == "__main__":
     #An example of sequential sampling for the APL1P model
     from mpisppy.confidence_intervals.seqsampling import SeqSampling
     optionsFSP = {'eps': 5.0,
-                  'solvername': "gurobi_direct",
+                  'solver_name': "gurobi_direct",
                   "c0":50,}
     apl1p_pb = SeqSampling("mpisppy.tests.examples.apl1p",
                             xhat_generator_apl1p, 

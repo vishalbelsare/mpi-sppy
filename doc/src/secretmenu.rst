@@ -1,7 +1,7 @@
 Secret Menu Items
 =================
 
-There are many options that are not exposed in ``mpisppy.utils.baseparsers.py`` and we list
+There are many options that are not exposed in ``mpisppy.utils.config.py`` and we list
 a few of them here.
 
 
@@ -48,3 +48,11 @@ hub definition dictionary is called ``hub_dict`` you would add
    hub_dict["opt_kwargs"]["PHoptions"]["initial_proximal_cut_count"] = 4
 
 before passing ``hub_dict`` to ``spin_the_wheel``.
+
+
+subgradient_while_waiting
+-------------------------
+
+The Lagrangian spoke has an additional argument, `subgradient_while_waiting`,
+which will compute subgradient steps while it is waiting on new W's from the
+hub.

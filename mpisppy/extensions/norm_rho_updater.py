@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 
 # Adapted from the PySP extension adaptive_rho_converger, authored by Gabriel Hackebeil
 
@@ -7,7 +13,7 @@ import math
 import mpisppy.extensions.extension
 
 import numpy as np
-import mpi4py.MPI as MPI
+import mpisppy.MPI as MPI
 
 _norm_rho_defaults = { 'convergence_tolerance' : 1e-4,
                            'rho_decrease_multiplier' : 2.0,
@@ -39,16 +45,18 @@ class NormRhoUpdater(mpisppy.extensions.extension.Extension):
             ph.options['norm_rho_options'] if 'norm_rho_options' in ph.options else dict()
 
         self._set_options()
-        self._prev_avg = None
-
+        self._prev_avg = {}
+        self.ph._mpisppy_norm_rho_update_inuse = True  # allow NormRhoConverger
+        
     def _set_options(self):
         options = self.norm_rho_options
         for attr_name, opt_name in _attr_to_option_name_map.items():
             setattr(self, attr_name, options[opt_name] if opt_name in options else _norm_rho_defaults[opt_name])
 
     def _snapshot_avg(self, ph):
-        scenario = ph.local_scenarios[ph.local_scenario_names[0]]
-        self._prev_avg = { ndn_i : xbar.value for ndn_i, xbar in scenario._mpisppy_model.xbars.items() }
+        for s in ph.local_scenarios.values():
+            for ndn_i, xbar in s._mpisppy_model.xbars.items():
+                self._prev_avg[ndn_i] = xbar.value
 
     def _compute_primal_residual_norm(self, ph):
 
@@ -95,10 +103,10 @@ class NormRhoUpdater(mpisppy.extensions.extension.Extension):
 
     def _compute_dual_residual_norm(self, ph):
         dual_resid = {}
-        s = ph.local_scenarios[ph.local_scenario_names[0]]
-        for ndn_i in s._mpisppy_data.nonant_indices:
-            dual_resid[ndn_i] = s._mpisppy_model.rho[ndn_i].value * \
-                                math.fabs( s._mpisppy_model.xbars[ndn_i].value - self._prev_avg[ndn_i] )
+        for s in ph.local_scenarios.values():
+            for ndn_i in s._mpisppy_data.nonant_indices:
+                dual_resid[ndn_i] = s._mpisppy_model.rho[ndn_i].value * \
+                        math.fabs( s._mpisppy_model.xbars[ndn_i].value - self._prev_avg[ndn_i] )
         return dual_resid
 
     def pre_iter0(self):
@@ -114,7 +122,7 @@ class NormRhoUpdater(mpisppy.extensions.extension.Extension):
         if self._stop_iter_rho_update is not None and \
                 (ph_iter > self._stop_iter_rho_update):
             return
-        if self._prev_avg is None:
+        if not self._prev_avg:
             self._snapshot_avg(ph)
         else:
             primal_residuals = self._compute_primal_residual_norm(ph)
