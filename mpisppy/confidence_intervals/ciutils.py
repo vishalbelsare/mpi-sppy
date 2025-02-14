@@ -1,39 +1,93 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # Utility functions for mmw, sequantial sampling and sample trees
 
 import os
+import math
+import importlib
 import numpy as np
-import mpi4py.MPI as mpi
-from sympy import factorint
+import mpisppy.MPI as mpi
 import pyomo.environ as pyo
 
 import mpisppy.utils.sputils as sputils
 from mpisppy import global_toc
 import mpisppy.utils.xhat_eval as xhat_eval
-import mpisppy.utils.amalgomator as ama
+import mpisppy.utils.amalgamator as ama
 import mpisppy.confidence_intervals.sample_tree as sample_tree
 
 fullcomm = mpi.COMM_WORLD
 global_rank = fullcomm.Get_rank()
 
-def branching_factors_from_numscens(numscens,num_stages=2):
-    #For now, we do not create unbalanced trees. 
-    #If numscens cant be written as the product of a num_stages branching factors,
-    #We take numscens <-numscens+1
+def _prime_factors(n):
+    """
+    Parameters
+    ----------
+    nin (int): postive integer to factor
+
+    Returns:
+    Returns a dictionary containing the prime factors of n as keys
+    and their respective multiplicities as values.
+    """
+    if n < 0:
+        raise ValueError(f"_prime_factors require positive input ({n})")
+    if n == 0:
+        return {0: 1}
+    elif n == 1:
+        return {}
+
+    retval = {}
+    # collect the 2's
+    while (n % 2 == 0):
+        retval[2] = retval.get(2, 0) + 1
+        n /= 2
+    # traverse the odds
+    i = 3
+    while i <= math.sqrt(n):
+        while n % i == 0:
+            retval[i] = retval.get(i, 0) + 1
+            n /= i
+        i += 2
+    if n > 2:
+        retval[n] = retval.get(n, 0) + 1
+    return retval
+
+def branching_factors_from_numscens(numscens,num_stages):
+    """ Create branching factors to be used for sampling a tree.
+    Since most use cases are balanced trees, for now, we do not create unbalanced trees. 
+    If numscens cannot be written as the product of a num_stages branching factors,
+    we take numscens <-numscens+1
+    
+    Parameters
+    -----------
+    numscens : int
+        Number of leaf nodes/scenarios.
+    num_stages: int
+        Number of stages in the tree
+
+    Returns
+    --------
+    branching_factors: list of int
+        The branching factors for approximately numscens
+    """
     if num_stages == 2:
         return None
     else:
         for i in range(2**(num_stages-1)):
             n = numscens+i
-            prime_fact = factorint(n)
+            prime_fact = _prime_factors(n)
             if sum(prime_fact.values())>=num_stages-1: #Checking that we have enough factors
                 branching_factors = [0]*(num_stages-1)
                 fact_list = [factor for (factor,mult) in prime_fact.items() for i in range(mult) ]
                 for k in range(num_stages-1):
                     branching_factors[k] = np.prod([fact_list[(num_stages-1)*i+k] for i in range(1+len(fact_list)//(num_stages-1)) if (num_stages-1)*i+k<len(fact_list)])
                 return branching_factors
-        raise RuntimeError("branching_factors_from_numscens is not working correctly. Did you take num_stages>=2 ?")
+        raise RuntimeError("branching_factors_from_numscens is not working correctly.")
 
 def scalable_branching_factors(numscens, ref_branching_factors):
     '''
@@ -55,8 +109,8 @@ def scalable_branching_factors(numscens, ref_branching_factors):
 
     Returns
     -------
-    new_branching_factors
-        DESCRIPTION.
+    new_branching_factors: list of int
+        The branching factors for approximately numscens that "looks like" the reference
 
     '''
     numstages = len(ref_branching_factors)+1
@@ -115,35 +169,60 @@ def read_xhat(path="xhat.npy",num_stages=2,delete_file=False):
         os.remove(path)
     return(xhat)
 
-def correcting_numeric(G,relative_error=True,threshold=1e-4,objfct=None):
-    #Correcting small negative of G due to numerical error while solving EF 
-    if relative_error:
-        if objfct is None:
-            raise RuntimeError("We need a value of the objective function to remove numerically negative G")
-        elif (G<= -threshold*np.abs(objfct)):
-            print(f"WARNING: The gap estimator is anormaly negative : {G}")
-            return G
-        else:
-            return max(0,G)
+def _fct_check(module, fct):
+    if not hasattr(module, fct):
+        raise RuntimeError(f"pyomo_opt_sense needs the module to have the {fct} function")
+
+def pyomo_opt_sense(module_name, cfg):
+    """ update cfg to have the optimization sense"""
+    module = importlib.import_module(module_name)
+    _fct_check(module, "scenario_names_creator")
+    sn = module.scenario_names_creator(1)  # an arbitrary scenario name
+    _fct_check(module, "kw_creator")
+    kw = module.kw_creator(cfg)
+    m = module.scenario_creator(sn[0], **kw)
+    objs = sputils.get_objs(m)
+    if objs[0].is_minimizing:
+        cfg.quick_assign("pyomo_opt_sense", int, pyo.minimize)
     else:
-        if (G<=-threshold):
-            print(f"WARNING: The gap estimator is anormaly negative : {G}")
-            return G
-        else: 
-            return max(0,G)           
+        cfg.quick_assign("pyomo_opt_sense", int, pyo.maximize)
+
+        
+def correcting_numeric(G, cfg, relative_error=True, threshold=1e-4, objfct=None):
+    #Correcting small negative G due to numerical error while solving EF
+    sense = cfg.get("pyo_opt_sense", pyo.minimize)  # 1 is minimize, -1 max
+    assert sense == 1 or sense == -1
+    if relative_error:
+        crit = threshold*np.abs(objfct)
+    else:
+        crit = threshold
+    if objfct is None:
+        raise RuntimeError("We need a value of the objective function to remove numerically small G")
+    elif sense == pyo.minimize and G <= -crit:
+        print(f"WARNING: The gap estimator is the wrong sign: {G}")
+        return G
+    elif sense == pyo.maximize and G >= crit:
+        print(f"WARNING: The gap estimator is the wrong sign: {G}")
+        return G
+    else:
+        if sense == pyo.minimize:
+            return max(0, G)
+        else:
+            return min(0, G)
+
 
 def gap_estimators(xhat_one,
                    mname, 
-                   solving_type="EF-2stage",
+                   solving_type="EF_2stage",
                    scenario_names=None,
                    sample_options=None,
                    ArRP=1,
-                   scenario_creator_kwargs={}, 
+                   cfg=None,   # was: options; before that: scenario_creator_kwargs={}
                    scenario_denouement=None,
-                   solvername=None, 
+                   solver_name=None, 
                    solver_options=None,
                    verbose=False,
-                   objective_gap=False
+                   mpicomm=None,
                    ):
     ''' Given a xhat, scenario names, a scenario creator and options, 
     gap_estimators creates a scenario tree and the associatd estimators 
@@ -160,8 +239,8 @@ def gap_estimators(xhat_one,
     mname: str
         Name of the reference model, e.g. 'mpisppy.tests.examples.farmer'.
     solving_type: str, optional
-        The way we solve the approximate problem. Can be "EF-2stage" (default)
-        or "EF-mstage".
+        The way we solve the approximate problem. Can be "EF_2stage" (default)
+        or "EF_mstage".
     scenario_names: list, optional
         List of scenario names used to compute G_n and s_n. Default is None
         Must be specified for 2 stage, but can be missing for multistage
@@ -171,18 +250,16 @@ def gap_estimators(xhat_one,
         of the scenario tree
     ArRP:int,optional
         Number of batches (we create a ArRP model). Default is 1 (one batch).
-    scenario_creator_kwargs: dict, optional
+    cfg: Config, not really optional
         Additional arguments for scenario_creator. Default is {}
     scenario_denouement: function, optional
         Function to run after scenario creation. Default is None.
-    solvername : str, optional
+    solver_name : str, optional
         Solver. Default is None
     solver_options: dict, optional
         Solving options. Default is None
     verbose: bool, optional
         Should it print the gap estimator ? Default is True
-    objective_gap: bool, optional
-        Returns a gap estimate around approximate objective value
 
     branching_factors: list, optional
         Only for multistage. List of branching factors of the sample scenario tree.
@@ -193,12 +270,15 @@ def gap_estimators(xhat_one,
 
     '''
     global_toc("Enter gap_estimators")
-    if solving_type not in ["EF-2stage","EF-mstage"]:
+    if solving_type not in ["EF_2stage","EF_mstage"]:
+        print("solving type=", solving_type)
         raise RuntimeError("Only EF solve for the approximate problem is supported yet.")
     else:
-        is_multi = (solving_type=="EF-mstage")
+        is_multi = (solving_type=="EF_mstage")
     
-    
+    m = importlib.import_module(mname)
+    ama.check_module_ama(m)
+    scenario_creator_kwargs=m.kw_creator(cfg)
         
     if is_multi:
         try:
@@ -222,9 +302,9 @@ def gap_estimators(xhat_one,
         for k in range(ArRP):
             scennames = scenario_names[k*(n//ArRP):(k+1)*(n//ArRP)]
             tmp = gap_estimators(xhat_one, mname,
-                                   solvername=solvername,
+                                   solver_name=solver_name,
                                    scenario_names=scennames, ArRP=1,
-                                   scenario_creator_kwargs=scenario_creator_kwargs,
+                                   cfg=cfg,
                                    scenario_denouement=scenario_denouement,
                                    solver_options=solver_options,
                                    solving_type=solving_type
@@ -250,33 +330,35 @@ def gap_estimators(xhat_one,
                                               starting_stage=1, 
                                               branching_factors=branching_factors,
                                               seed=start, 
-                                              options=scenario_creator_kwargs,
-                                              solvername=solvername,
+                                              cfg=cfg,
+                                              solver_name=solver_name,
                                               solver_options=solver_options)
         samp_tree.run()
         start += sputils.number_of_nodes(branching_factors)
         ama_object = samp_tree.ama
     else:
-        #We use amalgomator to do it
-
-        ama_options = dict(scenario_creator_kwargs)
-        ama_options['start'] = start
-        ama_options['num_scens'] = len(scenario_names)
-        ama_options['EF_solver_name'] = solvername
-        ama_options['EF_solver_options'] = solver_options
-        ama_options[solving_type] = True
-        ama_object = ama.from_module(mname, ama_options,use_command_line=False)
+        #We use amalgamator to do it
+        num_scens = len(scenario_names)
+        ama_cfg = cfg()
+        ama_cfg.quick_assign(solving_type, bool, True)
+        ama_cfg.quick_assign("EF_solver_name", str, solver_name)
+        solver_options_str= sputils.option_dict_to_string(solver_options)  # cfg need str
+        ama_cfg.quick_assign("EF_solver_options", str, solver_options_str)
+        ama_cfg.quick_assign("num_scens", int, num_scens)
+        ama_cfg.quick_assign("_mpisppy_probability", float, 1/num_scens)
+        ama_cfg.quick_assign("start", int, start)
+        ama_object = ama.from_module(mname, ama_cfg, use_command_line=False)
         ama_object.scenario_names = scenario_names
         ama_object.verbose = False
         ama_object.run()
         start += len(scenario_names)
         
     #Optimal solution of the approximate problem
-    zstar = ama_object.best_outer_bound
+    zn_star = ama_object.best_outer_bound
     #Associated policies
     xstars = sputils.nonant_cache_from_ef(ama_object.ef)
     
-    #Then, we evaluate the fonction value induced by the scenario at xstar.
+    #Then, we evaluate the function value induced by the scenario at xstar.
     
     if is_multi:
         # Find feasible policies (i.e. xhats) for every non-leaf nodes
@@ -284,13 +366,14 @@ def gap_estimators(xhat_one,
             local_scenarios = {sname:getattr(samp_tree.ef,sname) for sname in samp_tree.ef._ef_scenario_names}
         else:
             local_scenarios = {samp_tree.ef._ef_scenario_names[0]:samp_tree.ef}
+            
         xhats,start = sample_tree.walking_tree_xhats(mname,
                                                     local_scenarios,
                                                     xhat_one['ROOT'],
                                                     branching_factors,
                                                     start,
-                                                    scenario_creator_kwargs,
-                                                    solvername=solvername,
+                                                    cfg,
+                                                    solver_name=solver_name,
                                                     solver_options=solver_options)
         
         #Compute then the average function value with this policy
@@ -304,7 +387,7 @@ def gap_estimators(xhat_one,
     xhat_eval_options = {"iter0_solver_options": None,
                          "iterk_solver_options": None,
                          "display_timing": False,
-                         "solvername": solvername,
+                         "solver_name": solver_name,
                          "verbose": False,
                          "solver_options":solver_options}
     ev = xhat_eval.Xhat_Eval(xhat_eval_options,
@@ -312,12 +395,12 @@ def gap_estimators(xhat_one,
                             ama_object.scenario_creator,
                             scenario_denouement,
                             scenario_creator_kwargs=scenario_creator_kwargs,
-                            all_nodenames = all_nodenames)
+                            all_nodenames = all_nodenames,mpicomm=mpicomm)
     #Evaluating xhat and xstar and getting the value of the objective function 
     #for every (local) scenario
-    zhat=ev.evaluate(xhats)
+    ev.evaluate(xhats)
     objs_at_xhat = ev.objs_dict
-    zstar=ev.evaluate(xstars)
+    zn_star=ev.evaluate(xstars)
     objs_at_xstar = ev.objs_dict
     
     eval_scen_at_xhat = []
@@ -342,13 +425,9 @@ def gap_estimators(xhat_one,
     sample_var = (ssq - G**2)/(1-prob_sqnorm) #Unbiased sample variance
     s = np.sqrt(sample_var)
     
-    use_relative_error = (np.abs(zstar)>1)
-    G = correcting_numeric(G,objfct=obj_at_xhat,
+    use_relative_error = (np.abs(zn_star)>1)
+    G = correcting_numeric(G,cfg,objfct=obj_at_xhat,
                            relative_error=use_relative_error)
-    if objective_gap:
-        if is_multi:
-            return {"G":G,"s":s,"zhats": [zhat],"zstars":[zstar], "seed":start} 
-        else:
-            return {"G":G,"s":s,"zhats": eval_scen_at_xhat, "zstars": eval_scen_at_xstar, "seed":start} 
-    else:
-        return {"G":G,"s":s,"seed":start}
+  
+    #objective_gap removed Sept.29 2022
+    return {"G":G,"s":s,"seed":start}

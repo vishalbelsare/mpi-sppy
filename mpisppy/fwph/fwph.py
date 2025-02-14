@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 ''' Implementation of the Frank-Wolfe Progressive Hedging (FW-PH) algorithm
     described in the paper:
 
@@ -43,7 +49,7 @@ import pyomo.environ as pyo
 import time
 import re # For manipulating scenario names
 
-from mpi4py import MPI
+from mpisppy import MPI
 from pyomo.repn.standard_repn import generate_standard_repn
 from mpisppy.utils.sputils import find_active_objective
 from pyomo.core.expr.visitor import replace_expressions
@@ -61,8 +67,9 @@ class FWPH(mpisppy.phbase.PHBase):
         all_nodenames=None,
         mpicomm=None,
         scenario_creator_kwargs=None,
-        PH_converger=None,
+        ph_converger=None,
         rho_setter=None,
+        variable_probability=None,
     ):
         super().__init__(
             PH_options, 
@@ -74,10 +81,10 @@ class FWPH(mpisppy.phbase.PHBase):
             scenario_creator_kwargs=scenario_creator_kwargs,
             extensions=None,
             extension_kwargs=None,
-            PH_converger=PH_converger,
+            ph_converger=ph_converger,
             rho_setter=rho_setter,
-        )
-
+        )      
+        assert (variable_probability is None), "variable probability is not allowed with fwph"
         self._init(FW_options)
 
     def _init(self, FW_options):
@@ -89,8 +96,6 @@ class FWPH(mpisppy.phbase.PHBase):
 
     def fw_prep(self):
         self.PH_Prep(attach_duals=True, attach_prox=False)
-        self._check_for_multistage()
-        self.subproblem_creation(self.options['verbose'])
         self._output_header()
 
         if ('point_creator' in self.FW_options):
@@ -104,7 +109,7 @@ class FWPH(mpisppy.phbase.PHBase):
             if (check):
                 self._check_initial_points()
             self._create_solvers()
-            self._use_rho_setter(verbose and self.cylinder_rank==0)
+            self._use_rho_setter(self.options['verbose'] and self.cylinder_rank==0)
             self._initialize_MIP_var_values()
             best_bound = -np.inf if self.is_minimizing else np.inf
         else:
@@ -134,8 +139,8 @@ class FWPH(mpisppy.phbase.PHBase):
         self._swap_nonant_vars()
         self._reenable_W()
 
-        if (self.PH_converger):
-            self.convobject = self.PH_converger(self, self.cylinder_rank, self.n_proc)
+        if (self.ph_converger):
+            self.convobject = self.ph_converger(self, self.cylinder_rank, self.n_proc)
 
         return best_bound
 
@@ -172,7 +177,7 @@ class FWPH(mpisppy.phbase.PHBase):
                         print('FWPH converged to user-specified criteria')
                     break
                 self.spcomm.sync()
-            if (self.PH_converger):
+            if (self.ph_converger):
                 self.Compute_Xbar(self.options['verbose'])
                 diff = self.convobject.convergence_value()
                 if (self.convobject.is_converged()):
@@ -196,7 +201,6 @@ class FWPH(mpisppy.phbase.PHBase):
             secs = time.time() - self.t0
             self._output(itr+1, self._local_bound, best_bound, diff, secs)
             self.Update_W(self.options['verbose'])
-            timed_out = self._is_timed_out()
             if (self._is_timed_out()):
                 if (self.cylinder_rank == 0 and self.vb):
                     print('Timeout.')
@@ -327,29 +331,29 @@ class FWPH(mpisppy.phbase.PHBase):
 
         # Add new variable and update \sum a_i = 1 constraint
         new_var = qp.a.add() # Add the new convex comb. variable
+        lb, body, ub = qp.sum_one.to_bounded_expression()
+        body += new_var
+        qp.sum_one.set_value((lb, body, ub))
         if (persistent):
             solver.add_var(new_var)
             solver.remove_constraint(qp.sum_one)
-            qp.sum_one._body += new_var
             solver.add_constraint(qp.sum_one)
-        else:
-            qp.sum_one._body += new_var
 
         target = mip.ref_vars if self.bundling else mip.nonant_vars
         for (node, ix) in qp.eqx.index_set():
+            lb, body, ub = qp.eqx[node, ix].to_bounded_expression()
+            body += new_var * target[node, ix].value
+            qp.eqx[node, ix].set_value((lb, body, ub))
             if (persistent):
                 solver.remove_constraint(qp.eqx[node, ix])
-                qp.eqx[node, ix]._body += new_var * target[node, ix].value
                 solver.add_constraint(qp.eqx[node, ix])
-            else:
-                qp.eqx[node, ix]._body += new_var * target[node,ix].value
         for key in mip._mpisppy_model.y_indices:
+            lb, body, ub = qp.eqy[key].to_bounded_expression()
+            body += new_var * pyo.value(mip.leaf_vars[key])
+            qp.eqy[key].set_value((lb, body, ub))
             if (persistent):
                 solver.remove_constraint(qp.eqy[key])
-                qp.eqy[key]._body += new_var * pyo.value(mip.leaf_vars[key])
                 solver.add_constraint(qp.eqy[key])
-            else:
-                qp.eqy[key]._body += new_var * pyo.value(mip.leaf_vars[key])
 
     def _attach_indices(self):
         ''' Attach the fields x_indices and y_indices to the model objects in
@@ -421,25 +425,18 @@ class FWPH(mpisppy.phbase.PHBase):
                         for (ndn,ix), nonant in mip._mpisppy_data.nonant_indices.items()}
                     EF.nonant_vars.update(nonant_dict)
                     # Leaf variables
-                    leaf_vars = self._get_leaf_vars(mip)
-                    leaf_var_dict = {(scenario_name, 'LEAF', ix): 
-                        leaf_vars[ix] for ix in range(len(leaf_vars))}
+                    leaf_var_dict = {(scenario_name, 'LEAF', ix):
+                        var for ix, var in enumerate(self._get_leaf_vars(mip))}
                     EF.leaf_vars.update(leaf_var_dict)
-                    EF.num_leaf_vars[scenario_name] = len(leaf_vars)
+                    EF.num_leaf_vars[scenario_name] = len(leaf_var_dict)
                     # Reference variables are already attached: EF.ref_vars
                     # indexed by (node_name, index)
         else:
             for (name, mip) in self.local_scenarios.items():
                 mip.nonant_vars = mip._mpisppy_data.nonant_indices
-                leaf_vars = self._get_leaf_vars(mip)
-                mip.leaf_vars = { ('LEAF', ix): 
-                    leaf_vars[ix] for ix in range(len(leaf_vars))
+                mip.leaf_vars = { ('LEAF', ix):
+                    var for ix, var in enumerate(self._get_leaf_vars(mip))
                 }
-
-    def _check_for_multistage(self):
-        if self.multistage:
-            raise RuntimeError('The FWPH algorithm only supports '
-                               'two-stage models at this time.')
 
     def _check_initial_points(self):
         ''' If t_max (i.e. the inner iteration limit) is set to 1, then the
@@ -467,7 +464,6 @@ class FWPH(mpisppy.phbase.PHBase):
         points = {key: value for block in init_pts 
                              for (key, value) in block.items()}
         scenario_names = points.keys()
-        num_scenarios = len(points)
 
         # Some index sets we will need..
         conv_ix = [(scenario_name, var_name) 
@@ -501,7 +497,7 @@ class FWPH(mpisppy.phbase.PHBase):
                    + pyo.quicksum(aux.slack_minus.values())
         aux.obj = pyo.Objective(expr=obj_expr, sense=pyo.minimize)
 
-        solver = pyo.SolverFactory(self.FW_options['solvername'])
+        solver = pyo.SolverFactory(self.FW_options['solver_name'])
         results = solver.solve(aux)
         self._check_solve(results, 'Auxiliary LP')
 
@@ -615,7 +611,7 @@ class FWPH(mpisppy.phbase.PHBase):
             if (self.bundling and strip_bundle_names):
                 scenario_weights = dict()
                 for ndn_ix, var in scenario._mpisppy_data.nonant_indices.items():
-                    rexp = '^' + scenario.name + '\.'
+                    rexp = r'^' + scenario.name + r'\.'
                     var_name = re.sub(rexp, '', var.name)
                     scenario_weights[var_name] = \
                                         scenario._mpisppy_model.W[ndn_ix].value
@@ -629,16 +625,17 @@ class FWPH(mpisppy.phbase.PHBase):
 
     def _get_leaf_vars(self, scenario):
         ''' This method simply needs to take an input scenario
-            (pyo.ConcreteModel) and return a list of variable objects
+            (pyo.ConcreteModel) and yield the variable objects
             corresponding to the leaf node variables for that scenario.
 
             Functions by returning the complement of the set of
             non-anticipative variables.
         '''
-        nonant_var_ids = [id(var) for node in scenario._mpisppy_node_list
-                                  for var  in node.nonant_vardata_list]
-        return [var for var in scenario.component_data_objects(pyo.Var)
-                         if id(var) not in nonant_var_ids]
+        nonant_var_ids = {id(var) for node in scenario._mpisppy_node_list
+                                  for var  in node.nonant_vardata_list}
+        for var in scenario.component_data_objects(pyo.Var):
+            if id(var) not in nonant_var_ids:
+                yield var
 
     def _get_xbars(self, strip_bundle_names=False):
         ''' Return the xbar vector if rank = 0 and None, otherwise
@@ -666,7 +663,7 @@ class FWPH(mpisppy.phbase.PHBase):
                 for (ix, var) in enumerate(node.nonant_vardata_list):
                     var_name = var.name
                     if (self.bundling and strip_bundle_names):
-                        rexp = '^' + random_scenario_name + '\.'
+                        rexp = r'^' + random_scenario_name + r'\.'
                         var_name = re.sub(rexp, '', var_name)
                     xbar_dict[var_name] = scenario._mpisppy_model.xbars[node.name, ix].value
             return xbar_dict
@@ -828,7 +825,7 @@ class FWPH(mpisppy.phbase.PHBase):
         '''
         # 1. Check for required options
         reqd_options = ['FW_iter_limit', 'FW_weight', 'FW_conv_thresh',
-                        'solvername']
+                        'solver_name']
         losers = [opt for opt in reqd_options if opt not in self.FW_options]
         if (len(losers) > 0):
             msg = "FW_options is missing the following key(s): " + \
@@ -861,13 +858,21 @@ class FWPH(mpisppy.phbase.PHBase):
                 'convergence, provide initial points, or increase '
                 'FW_iter_limit')
 
-        # 3. Check that the user did not specify the linearization of binary
+        # 3a. Check that the user did not specify the linearization of binary
         #    proximal terms (no binary variables allowed in FWPH QPs)
         if ('linearize_binary_proximal_terms' in self.options
             and self.options['linearize_binary_proximal_terms']):
             print('Warning: linearize_binary_proximal_terms cannot be used '
                   'with the FWPH algorithm. Ignoring...')
             self.options['linearize_binary_proximal_terms'] = False
+
+        # 3b. Check that the user did not specify the linearization of all
+        #    proximal terms (FWPH QPs should be QPs)
+        if ('linearize_proximal_terms' in self.options
+            and self.options['linearize_proximal_terms']):
+            print('Warning: linearize_proximal_terms cannot be used '
+                  'with the FWPH algorithm. Ignoring...')
+            self.options['linearize_proximal_terms'] = False
 
         # 4. Provide a time limit of inf if the user did not specify
         if ('time_limit' not in self.FW_options.keys()):
@@ -975,7 +980,7 @@ class FWPH(mpisppy.phbase.PHBase):
                 QP.obj = pyo.Objective(expr=-new+ph_term, sense=pyo.minimize)
 
             ''' Attach a solver with various options '''
-            solver = pyo.SolverFactory(self.FW_options['solvername'])
+            solver = pyo.SolverFactory(self.FW_options['solver_name'])
             if sputils.is_persistent(solver):
                 solver.set_instance(QP)
             if 'qp_solver_options' in self.FW_options:

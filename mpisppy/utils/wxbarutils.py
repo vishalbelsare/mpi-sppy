@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 ''' Utilities for reading and writing W and 
     x-bar values in and out of csv files. 
 
@@ -32,8 +38,10 @@
             options dictionary.
 '''
 
-import pyomo.environ as pyo
 import os
+import numpy as np
+import pyomo.environ as pyo
+from pyomo.common.collections import ComponentSet
 
 ''' W utilities '''
 
@@ -78,8 +86,12 @@ def write_W_to_file(PHB, fname, sep_files=False):
                         row = ','.join([sname, vname, str(val)]) + '\n'
                         f.write(row)
 
-def set_W_from_file(fname, PHB, rank, sep_files=False):
-    ''' 
+
+
+
+
+def set_W_from_file(fname, PHB, rank, sep_files=False, disable_check=False):
+    r'''
     Args:
         fname (str) -- if sep_files=False, file containing the dual weights.
             Otherwise, path of the directory containing the dual weight files
@@ -108,7 +120,8 @@ def set_W_from_file(fname, PHB, rank, sep_files=False):
         w_val_dict = _parse_W_csv(fname, scenario_names_local,
                                     scenario_names_global, rank)
 
-    _check_W(w_val_dict, PHB, rank)
+    if not disable_check:
+        _check_W(w_val_dict, PHB, rank)
 
     mp = {(sname, var.name): (node.name, ix)
             for (sname, scenario) in PHB.local_scenarios.items()
@@ -256,7 +269,7 @@ def _check_W(w_val_dict, PHB, rank):
             dual = sum(c[vname] for c in checks)
             if (abs(dual) > 1e-7):
                 raise RuntimeError('Provided weights do not satisfy '
-                    'dual feasibility: \sum_{scenarios} prob(s) * w(s) != 0. '
+                    r'dual feasibility: \sum_{scenarios} prob(s) * w(s) != 0. '
                     'Error on variable ' + vname)
 
 ''' X-bar utilities '''
@@ -361,3 +374,48 @@ def _check_xbar(xbar_val_dict, PHB):
     if (set2):
         print('Ignoring the following variables values provided in the '
               'input file: ' + ', '.join([v for v in set2]))
+
+
+def ROOT_xbar_npy_serializer(PHB, fname):
+    """ Write the root node xbar to be read by a numpy load.
+    Args:
+        PHB (PHBase object) -- Where the W values live
+        fname (str) -- name of file to which we write.
+
+    """
+    arbitrary_scen = PHB.local_scenarios[list(PHB.local_scenarios.keys())[0]]
+    root_nlen = arbitrary_scen._mpisppy_data.nlens["ROOT"]
+    root_xbar_list = [pyo.value(arbitrary_scen._mpisppy_model.xbars["ROOT", ix]) for ix in range(root_nlen)]
+    np.savetxt(fname, root_xbar_list)
+
+
+def fix_ef_ROOT_nonants(ef, root_nonants):
+    """ modify ef to have fixed values for the root nonants
+    Args:
+        ef (Pyomo ConcreteModel for an EF): the extensive form to modify
+        root_nonants(list): the nonant values for the root node nonants
+    """
+    if hasattr(ef, "_C_EF_"):
+        # real EF
+        varlist = [var for (ndn,i), var in ef.ref_vars.items() if ndn == "ROOT"]
+        all_root_surrogate_nonant_vardatas = ComponentSet()
+        for sname in ef._ef_scenario_names:
+            scenario = getattr(ef, sname)
+            for node in scenario._mpisppy_node_list:
+                if node.name == "ROOT":
+                    break
+            all_root_surrogate_nonant_vardatas.update(node.surrogate_vardatas)
+    else:
+        # scenario acting as EF
+        for node in ef._mpisppy_node_list:
+            if node.name == "ROOT":
+                break
+        varlist = node.nonant_vardata_list
+        all_root_surrogate_nonant_vardatas = ComponentSet(node.surrogate_vardatas)
+    assert len(varlist) == len(root_nonants)
+    for var, vval in zip(varlist, root_nonants):
+        if var in all_root_surrogate_nonant_vardatas:
+            continue
+        if var.is_binary() or var.is_integer():
+            vval = round(vval)
+        var.fix(vval)

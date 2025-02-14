@@ -1,19 +1,20 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 import abc
-import logging
-import time
-import random
 import logging
 import mpisppy.log
 import mpisppy.utils.sputils as sputils
 import mpisppy.cylinders.spoke as spoke
-import mpi4py.MPI as mpi
-import pyomo.environ as pyo
+import mpisppy.MPI as mpi
 import numpy as np
 
 from mpisppy.utils.xhat_eval import Xhat_Eval
-from math import inf
 
 # Could also pass, e.g., sys.stdout instead of a filename
 mpisppy.log.setup_logger("mpisppy.cylinders.slam_heuristic",
@@ -22,6 +23,8 @@ mpisppy.log.setup_logger("mpisppy.cylinders.slam_heuristic",
 logger = logging.getLogger("mpisppy.cylinders.slam_heuristic")
 
 class _SlamHeuristic(spoke.InnerBoundNonantSpoke):
+
+    converger_spoke_char = 'S'
 
     @property
     @abc.abstractmethod
@@ -92,7 +95,12 @@ class _SlamHeuristic(spoke.InnerBoundNonantSpoke):
                     solver = s._solver_plugin if is_pers else None
 
                     for ix, var in enumerate(s._mpisppy_data.nonant_indices.values()):
-                        var.fix(global_candidate[ix])
+                        if var in s._mpisppy_data.all_surrogate_nonants:
+                            continue
+                        val = global_candidate[ix]
+                        if var.is_binary() or var.is_integer():
+                            val = round(val)
+                        var.fix(val)
                         if (is_pers):
                             solver.update_var(var)
 
@@ -102,9 +110,7 @@ class _SlamHeuristic(spoke.InnerBoundNonantSpoke):
                 
             slam_iter += 1
 
-class SlamUpHeuristic(_SlamHeuristic):
-
-    converger_spoke_char = 'U'
+class SlamMaxHeuristic(_SlamHeuristic):
 
     @property
     def numpy_op(self):
@@ -114,9 +120,7 @@ class SlamUpHeuristic(_SlamHeuristic):
     def mpi_op(self):
         return mpi.MAX
 
-class SlamDownHeuristic(_SlamHeuristic):
-
-    converger_spoke_char = 'D'
+class SlamMinHeuristic(_SlamHeuristic):
 
     @property
     def numpy_op(self):

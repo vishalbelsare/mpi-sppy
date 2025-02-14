@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 import mpisppy.spbase
 import pyomo.environ as pyo
 import logging
@@ -18,20 +24,26 @@ class ExtensiveForm(mpisppy.spbase.SPBase):
 
     Args:
         options (dict):
-            Dictionary of options. Must include a `solver` key to
-            specify which solver to use on the EF.
+            Dictionary of options. May include a `solver` key to
+            specify which solver name to use on the EF.
         all_scenario_names (list):
             List of the names of each scenario in the EF (strings).
         scenario_creator (callable):
             Scenario creator function, which takes as input a scenario
             name, and returns a Pyomo model of that scenario.
+        scenario_creator_kwargs (dict, optional):
+            Keyword arguments passed to `scenario_creator`.
+        all_nodenames (list, optional):
+            List of all node names, incl. leaves. Can be None for two-stage
+            problem.
         model_name (str, optional):
             Name of the resulting EF model object.
-        scenario_creator_kwargs (dict):
-            Keyword args passed to `scenario_creator`.
         suppress_warnings (bool, optional):
             Boolean to suppress warnings when building the EF. Default
             is False.
+
+    Note: allowing use of the "solver" option key is for backward compatibility
+
     """
     def __init__(
         self,
@@ -154,6 +166,7 @@ class ExtensiveForm(mpisppy.spbase.SPBase):
 
 
 if __name__ == "__main__":
+    # for ad hoc developer testing
     import mpisppy.tests.examples.farmer as farmer
 
     """ Farmer example """

@@ -1,19 +1,23 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # updated 23 April 2020
 # Serial (not cylinders)
 
-import os
 import sys
 import pyomo.environ as pyo
 import mpisppy.phbase
 import mpisppy.opt.ph
-import mpisppy.scenario_tree as scenario_tree
 from mpisppy.extensions.extension import MultiExtension
 from mpisppy.extensions.fixer import Fixer
 from mpisppy.extensions.mipgapper import Gapper
-from mpisppy.extensions.xhatlooper import XhatLooper
-from mpisppy.extensions.xhatclosest import XhatClosest
+from mpisppy.extensions.avgminmaxer import MinMaxAvg
+from mpisppy.extensions.wtracker_extension import Wtracker_extension
 from sizes import scenario_creator, \
                   scenario_denouement, \
                   _rho_setter, \
@@ -24,12 +28,12 @@ ScenCount = 10  # 3 or 10
 if __name__ == "__main__":
 
     if len(sys.argv) != 2:
-        print("usage: python sizes_demo.py solvername")
+        print("usage: python sizes_demo.py solver_name")
         quit()
     options = {}
-    options["solvername"] = sys.argv[1]
+    options["solver_name"] = sys.argv[1]
     options["asynchronousPH"] = False
-    options["PHIterLimit"] = 2
+    options["PHIterLimit"] = 100
     options["defaultPHrho"] = 1
     options["convthresh"] = 0.001
     options["subsolvedirectives"] = None
@@ -66,7 +70,10 @@ if __name__ == "__main__":
                                   1: 0.009,
                                   5: 0.005,
                                  10: 0.001}}
-
+    options["wtracker_options"] ={"wlen": 4,
+                                  "reportlen": 6,
+                                  "stdevthresh": 0.1}
+    
 
     all_scenario_names = list()
     for sn in range(ScenCount):
@@ -74,14 +81,14 @@ if __name__ == "__main__":
     # end hardwire
 
     ######### EF ########
-    solver = pyo.SolverFactory(options["solvername"])
+    solver = pyo.SolverFactory(options["solver_name"])
 
     ef = mpisppy.utils.sputils.create_EF(
         all_scenario_names,
         scenario_creator,
         scenario_creator_kwargs={"scenario_count": ScenCount},
     )
-    if 'persistent' in options["solvername"]:
+    if 'persistent' in options["solver_name"]:
         solver.set_instance(ef, symbolic_solver_labels=True)
     solver.options["mipgap"] = 0.01
     results = solver.solve(ef, tee=options["verbose"])
@@ -90,7 +97,7 @@ if __name__ == "__main__":
     #### first PH ####
 
     #####multi_ext = {"ext_classes": [Fixer, Gapper, XhatLooper, XhatClosest]}
-    multi_ext = {"ext_classes": [Fixer, Gapper]}
+    multi_ext = {"ext_classes": [Fixer, Gapper, Wtracker_extension]}
     ph = mpisppy.opt.ph.PH(
         options,
         all_scenario_names,
@@ -106,10 +113,10 @@ if __name__ == "__main__":
     if ph.cylinder_rank == 0:
          print ("Trival bound =",tbound)
 
-    print("Quitting early.")
+    #print("Quitting early.")
+    #quit()
 
     ############ test W and xbar writers and special joint reader  ############
-    from mpisppy.utils.wxbarwriter import WXBarWriter
     
     newph = mpisppy.opt.ph.PH(
         options,
@@ -124,7 +131,6 @@ if __name__ == "__main__":
 
     conv, obj, tbound = newph.ph_main()
     #####
-    from mpisppy.utils.wxbarreader import WXBarReader
     
     newph = mpisppy.opt.ph.PH(
         options,
@@ -181,14 +187,14 @@ if __name__ == "__main__":
         scenario_creator,
         scenario_denouement,
         scenario_creator_kwargs={"scenario_count": ScenCount},
+        extensions=MinMaxAvg,
+        ph_converger=None,
+        rho_setter=None,
     )
     ph.options["PHIterLimit"] = 3
 
-    from mpisppy.extensions.avgminmaxer import MinMaxAvg
     options["avgminmax_name"] =  "FirstStageCost"
-    conv, obj, bnd = ph.ph_main(extensions=MinMaxAvg,
-                                PH_converger=None,
-                                rho_setter=None)
+    conv, obj, bnd = ph.ph_main()
 
     
 

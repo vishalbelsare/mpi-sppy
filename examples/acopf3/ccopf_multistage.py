@@ -1,11 +1,16 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # JPW and DLW; July 2019; ccopf create scenario instances for line outages
 # extended Fall 2019 by DLW
 import egret
 import egret.models.acopf as eac
 import egret.models.ac_relaxations as eac_relax
-from egret.data.model_data import ModelData
 from egret.parsers.matpower_parser import create_ModelData
 import mpisppy.scenario_tree as scenario_tree
 import mpisppy.utils.sputils as sputils
@@ -16,10 +21,8 @@ import os
 import sys
 import copy
 import scipy
-import socket
 import numpy as np
-import datetime as dt
-import mpi4py.MPI as mpi
+import mpisppy.MPI as mpi
 
 import pyomo.environ as pyo
 
@@ -51,10 +54,10 @@ def FixGaussian(minutes, acstream, mu, sigma):
 #======= end repair functions =====
     
 def _md_dict(epath):
-    p = str(egret.__path__)
-    l = p.find("'")
-    r = p.find("'", l+1)
-    egretrootpath = p[l+1:r]
+    path = str(egret.__path__)
+    left = path.find("'")
+    right = path.find("'", left+1)
+    egretrootpath = path[left+1:right]
     if epath[0] != os.sep:
         test_case = os.path.join(egretrootpath, epath)
     else:
@@ -115,7 +118,6 @@ def pysp2_callback(
         _egret_md (egret tuple with dict as [1]) egret model data
 
     """
-    print("Debug: convex_relaxation=",convex_relaxation)
     # pull the number off the end of the scenario name
     scen_num = sputils.extract_num(scenario_name)
 
@@ -219,7 +221,6 @@ def pysp2_callback(
                 cond_prob=enode.CondProb,
                 stage=stage,
                 cost_expression=inst.stage_models[stage].obj,
-                scen_name_list=enode.ScenarioList,
                 nonant_list=[inst.stage_models[stage].pg,
                              inst.stage_models[stage].qg],
                 scen_model=inst, parent_name=parent_name))
@@ -258,9 +259,10 @@ def scenario_denouement(rank, scenario_name, scenario):
 
         print("GEN: %4s PG:" % gen, end="")
 
+        previous_val = None
         for stage in stages:
             current_val = pyo.value(getattr(scenario, "stage_models_"+str(stage)).pg[gen])
-            if stage == stages[0]:
+            if previous_val is None:
                 print("%6.2f -->> " % current_val, end=" ")
             else:
                 print("%6.2f" % (current_val-previous_val), end=" ")
@@ -269,9 +271,10 @@ def scenario_denouement(rank, scenario_name, scenario):
 
         print("GEN: %4s QG:" % gen, end="")
 
+        previous_val = None
         for stage in stages:
             current_val = pyo.value(getattr(scenario, "stage_models_"+str(stage)).qg[gen])
-            if stage == stages[0]:
+            if previous_val is None:
                 print("%6.2f -->> " % current_val, end=" ")
             else:
                 print("%6.2f" % (current_val-previous_val), end=" ")
@@ -285,13 +288,13 @@ def scenario_denouement(rank, scenario_name, scenario):
 if __name__ == "__main__":
     # as of April 27, 2020 __main__ has been updated only for EF
     print("EF only")
-    import mpi4py.MPI as mpi
+    import mpisppy.MPI as mpi
     n_proc = mpi.COMM_WORLD.Get_size()  # for error check
     # start options
-    solvername = "cplex"
-    print(f"Solving with {solvername}")
-    solver = pyo.SolverFactory(solvername)
-    if "gurobi" in solvername:
+    solver_name = "cplex"
+    print(f"Solving with {solver_name}")
+    solver = pyo.SolverFactory(solver_name)
+    if "gurobi" in solver_name:
         solver.options["BarHomogeneous"] = 1
 
     casename = "pglib-opf-master/pglib_opf_case14_ieee.m"
@@ -375,7 +378,7 @@ if __name__ == "__main__":
                              pysp2_callback,
                              scenario_creator_kwargs=scenario_creator_kwargs)
     ###solver.options["BarHomogeneous"] = 1
-    if "gurobi" in solvername:
+    if "gurobi" in solver_name:
         solver.options["BarHomogeneous"] = 1
 
     results = solver.solve(ef, tee=True)

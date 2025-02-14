@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 ''' An extension to initialize PH weights and/or PH xbar values from csv files.
 
     To use, specify either or both of the following keys to the options dict:
@@ -28,11 +34,15 @@
 import mpisppy.utils.wxbarutils
 import os # For checking if files exist
 import mpisppy.extensions.extension
+import mpisppy.MPI as MPI
+
+n_proc = MPI.COMM_WORLD.Get_size()
+rank = MPI.COMM_WORLD.Get_rank()
 
 class WXBarReader(mpisppy.extensions.extension.Extension):
     """ Extension class for reading W values
     """
-    def __init__(self, ph, rank, n_proc):
+    def __init__(self, ph):
 
         ''' Do a bunch of checking if files exist '''
         w_fname, x_fname, sep_files = None, None, False
@@ -67,25 +77,27 @@ class WXBarReader(mpisppy.extensions.extension.Extension):
         self.sep_files = sep_files
 
     def pre_iter0(self):
-        if (self.w_fname):
-            mpisppy.utils.wxbarutils.set_W_from_file(
-                    self.w_fname, self.PHB, self.cylinder_rank,
-                    sep_files=self.sep_files)
-            self.PHB._reenable_W() # This makes a big difference.
-        if (self.x_fname):
-            mpisppy.utils.wxbarutils.set_xbar_from_file(self.x_fname, self.PHB)
-            self.PHB._reenable_prox()
+        pass
+
 
     def post_iter0(self):
         pass
-        
-    def miditer(self, PHIter, conv):
-        ''' Called before the solveloop is called '''
-        pass
 
-    def enditer(self, PHIter):
+    def miditer(self):
+        ''' Called before the solveloop is called '''
+        if self.PHB._PHIter == 1:
+            if self.w_fname:
+                mpisppy.utils.wxbarutils.set_W_from_file(
+                        self.w_fname, self.PHB, self.cylinder_rank,
+                        sep_files=self.sep_files)
+                self.PHB._reenable_W() # This makes a big difference.
+            if self.x_fname:
+                mpisppy.utils.wxbarutils.set_xbar_from_file(self.x_fname, self.PHB)
+                self.PHB._reenable_prox()
+
+    def enditer(self):
         ''' Called after the solve loop '''
         pass
 
-    def post_everything(self, PHIter, conv):
+    def post_everything(self):
         pass

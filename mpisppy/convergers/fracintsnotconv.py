@@ -1,8 +1,15 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 """ fraction of ints converger to illustrate a custom converger that does not
     directly use mpi reduce calls.
     DLW Jan 2019
+    (DLW March 2023: Not tested with multiple hub ranks and might not work well in that case)
 """
 
 import math
@@ -72,4 +79,5 @@ class FractionalConverger(mpisppy.convergers.converger.Converger):
         Returns:
            converged?: True if converged, False otherwise
         """
-        return self._convergence_value() < self._options['convthresh']
+        self.conv = self._convergence_value()
+        return self.conv < self._options['convthresh']

@@ -1,7 +1,13 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 from pyomo.repn.standard_repn import generate_standard_repn
-from mpi4py import MPI
+from mpisppy import MPI
 from mpisppy.utils.lshaped_cuts import LShapedCutGenerator
 
 import numpy as np
@@ -40,8 +46,7 @@ class CrossScenarioCutSpoke(spoke.Spoke):
         ''' returns True if a kill signal was received,
             and refreshes the array and _locals'''
         self._new_locals = self.spoke_from_hub(self._locals)
-        kill = (self._locals[-1] == -1)
-        return kill
+        return self.remote_write_id == -1 
 
     def prep_cs_cuts(self):
         # create a map scenario -> index, this index is used for various lists containing scenario dependent info.

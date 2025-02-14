@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # Base and utility functions for mpisppy
 # Note to developers: things called spcomm are way more than just a comm; SPCommunicator
 
@@ -7,20 +13,64 @@ import pyomo.environ as pyo
 import sys
 import os
 import re
-import time
 import numpy as np
+import inspect
+import importlib
 import mpisppy.scenario_tree as scenario_tree
 from pyomo.core import Objective
+from pyomo.repn import generate_standard_repn
 
-try:
-    from mpi4py import MPI
-    haveMPI = True
-    global_rank = MPI.COMM_WORLD.Get_rank()
-except:
-    haveMPI = False
+from mpisppy import MPI, haveMPI
 from pyomo.core.expr.numeric_expr import LinearExpression
+from pyomo.opt import SolutionStatus, TerminationCondition
+from pyomo.core.base.indexed_component_slice import IndexedComponent_slice
 
-from mpisppy import tt_timer, global_toc
+from mpisppy import tt_timer
+
+global_rank = MPI.COMM_WORLD.Get_rank()
+
+
+def build_vardatalist(model, varlist=None):
+    """
+    Convert a list of pyomo variables to a list of SimpleVar and _GeneralVarData. If varlist is none, builds a
+    list of all variables in the model. Written by CD Laird
+
+    Parameters
+    ----------
+    model: ConcreteModel
+    varlist: None or list of pyo.Var
+    """
+    vardatalist = None
+
+    # if the varlist is None, then assume we want all the active variables
+    if varlist is None:
+        raise RuntimeError("varlist is None in scenario_tree.build_vardatalist")
+        vardatalist = [v for v in model.component_data_objects(pyo.Var, active=True, sort=True)]
+    elif isinstance(varlist, (pyo.Var, IndexedComponent_slice)):
+        # user provided a variable, not a list of variables. Let's work with it anyway
+        varlist = [varlist]
+
+    if vardatalist is None:
+        # expand any indexed components in the list to their
+        # component data objects
+        vardatalist = list()
+        for v in varlist:
+            if isinstance(v, IndexedComponent_slice):
+                vardatalist.extend(v.__iter__())
+            elif v.is_indexed():
+                vardatalist.extend((v[i] for i in sorted(v.keys())))
+            else:
+                vardatalist.append(v)
+    return vardatalist
+    
+
+def not_good_enough_results(results):
+    return (results is None) or (len(results.solution) == 0) or \
+        (results.solution(0).status == SolutionStatus.infeasible) or \
+        (results.solver.termination_condition == TerminationCondition.infeasible) or \
+        (results.solver.termination_condition == TerminationCondition.infeasibleOrUnbounded) or \
+        (results.solver.termination_condition == TerminationCondition.unbounded)
+
 
 _spin_the_wheel_move_msg = \
         "spin_the_wheel should now be used as the class "\
@@ -60,18 +110,16 @@ def first_stage_nonant_writer( file_name, scenario, bundling ):
 def scenario_tree_solution_writer( directory_name, scenario_name, scenario, bundling ):
     with open(os.path.join(directory_name, scenario_name+'.csv'), 'w') as f:
         for var in scenario.component_data_objects(
-                ctype=pyo.Var,
+                ctype=(pyo.Var, pyo.Expression),
                 descend_into=True,
                 active=True,
                 sort=True):
-            # should this be here?
-            if not var.stale:
-                var_name = var.name
-                if bundling:
-                    dot_index = var_name.find('.')
-                    assert dot_index >= 0
-                    var_name = var_name[(dot_index+1):]
-                f.write(f"{var_name},{pyo.value(var)}\n")
+            var_name = var.name
+            if bundling:  # loose bundling
+                dot_index = var_name.find('.')
+                assert dot_index >= 0
+                var_name = var_name[(dot_index+1):]
+            f.write(f"{var_name},{pyo.value(var)}\n")
         
 def write_spin_the_wheel_first_stage_solution(spcomm, opt_dict, solution_file_name,
         first_stage_solution_writer=first_stage_nonant_writer):
@@ -84,20 +132,53 @@ def write_spin_the_wheel_tree_solution(spcomm, opt_dict, solution_directory_name
 def local_nonant_cache(spcomm):
     raise RuntimeError(_spin_the_wheel_move_msg)
 
-def get_objs(scenario_instance):
+### a few Pyomo-related utilities ###
+
+
+def get_objs(scenario_instance, allow_none=False):
     """ return the list of objective functions for scenario_instance"""
     scenario_objs = scenario_instance.component_data_objects(pyo.Objective,
                     active=True, descend_into=True)
     scenario_objs = list(scenario_objs)
-    if (len(scenario_objs) == 0):
-        raise RuntimeError("Scenario " + sname + " has no active "
+    if (len(scenario_objs) == 0) and not allow_none:
+        raise RuntimeError(f"Scenario {scenario_instance.name} has no active "
                            "objective functions.")
     if (len(scenario_objs) > 1):
-        print("WARNING: Scenario", sname, "has multiple active "
-              "objectives. Selecting the first objective for "
-                  "inclusion in the extensive form.")
+        print(f"WARNING: Scenario {scenario_instance.name} has multiple active "
+              "objectives, returning a list.")
+
     return scenario_objs
 
+
+def stash_ref_objs(scenario_instance):
+    """Stash a reference to active objs so
+        Reactivate_obj can use the reference to reactivate them/it later.
+    """
+    scenario_instance._mpisppy_data.obj_list = get_objs(scenario_instance)
+
+
+def deact_objs(scenario_instance):
+    """ Deactivate objs 
+    Args:
+        scenario_instance (Pyomo ConcreteModel): the scenario
+    Returns:
+        obj_list (list of Pyomo Objectives): the deactivated objs
+    Note: If none are active, just do nothing
+    """
+    obj_list = get_objs(scenario_instance, allow_none=True)
+    for obj in obj_list:
+        obj.deactivate()
+    return obj_list
+
+
+def reactivate_objs(scenario_instance):
+    """ Reactivate ojbs stashed by stash_ref_objs """
+    if not hasattr(scenario_instance._mpisppy_data, "obj_list"):
+        raise RuntimeError("reactivate_objs called with prior call to stash_ref_objs")
+    for obj in scenario_instance._mpisppy_data.obj_list:
+        obj.activate()
+
+    
 def create_EF(scenario_names, scenario_creator, scenario_creator_kwargs=None,
               EF_name=None, suppress_warnings=False,
               nonant_for_fixed_vars=True):
@@ -156,9 +237,7 @@ def create_EF(scenario_names, scenario_creator, scenario_creator_kwargs=None,
                 if (ndn, i) not in scenario_instance.ref_vars:
                     scenario_instance.ref_vars[(ndn, i)] = v
         # patch in EF_Obj        
-        scenario_objs = get_objs(scenario_instance)        
-        for obj_func in scenario_objs:
-            obj_func.deactivate()
+        scenario_objs = deact_objs(scenario_instance)        
         obj = scenario_objs[0]            
         sense = pyo.minimize if obj.is_minimizing() else pyo.maximize
         scenario_instance.EF_Obj = pyo.Objective(expr=obj.expr, sense=sense)
@@ -167,17 +246,19 @@ def create_EF(scenario_names, scenario_creator, scenario_creator_kwargs=None,
 
     # Check if every scenario has a specified probability
     probs_specified = \
-        all([hasattr(scen, '_mpisppy_probability') for scen in scen_dict.values()])
-    if not probs_specified:
+        all(hasattr(scen, '_mpisppy_probability') for scen in scen_dict.values())
+    uniform_specified = \
+        probs_specified and all(scen._mpisppy_probability == "uniform" for scen in scen_dict.values())
+    if not probs_specified or uniform_specified:
         for scen in scen_dict.values():
             scen._mpisppy_probability = 1 / len(scen_dict)
-        if not suppress_warnings:
+        if not suppress_warnings and not uniform_specified:
             print('WARNING: At least one scenario is missing _mpisppy_probability attribute.',
                   'Assuming equally-likely scenarios...')
 
     EF_instance = _create_EF_from_scen_dict(scen_dict,
                                             EF_name=EF_name,
-                                            nonant_for_fixed_vars=True)
+                                            nonant_for_fixed_vars=nonant_for_fixed_vars)
     return EF_instance
 
 def _create_EF_from_scen_dict(scen_dict, EF_name=None,
@@ -235,19 +316,17 @@ def _create_EF_from_scen_dict(scen_dict, EF_name=None,
         EF_instance.add_component(sname, scenario_instance)
         EF_instance._ef_scenario_names.append(sname)
         # Now deactivate the scenario instance Objective
-        scenario_objs = get_objs(scenario_instance)
-        for obj_func in scenario_objs:
-            obj_func.deactivate()
+        scenario_objs = deact_objs(scenario_instance)
         obj_func = scenario_objs[0] # Select the first objective
         try:
             EF_instance.EF_Obj.expr += scenario_instance._mpisppy_probability * obj_func.expr
-            EF_instance._mpisppy_probability   += scenario_instance._mpisppy_probability
+            EF_instance._mpisppy_probability += scenario_instance._mpisppy_probability
         except AttributeError as e:
             raise AttributeError("Scenario " + sname + " has no specified "
                         "probability. Specify a value for the attribute "
                         " _mpisppy_probability and try again.") from e
     # Normalization does nothing when solving the full EF, but is required for
-    # appropraite scaling of EFs used as bundles.
+    # appropriate scaling of EFs used as bundles.
     EF_instance.EF_Obj.expr /= EF_instance._mpisppy_probability
 
     # For each node in the scenario tree, we need to collect the
@@ -286,12 +365,15 @@ def _create_EF_from_scen_dict(scen_dict, EF_name=None,
             for i in range(nlens[ndn]):
                 v = node.nonant_vardata_list[i]
                 if (ndn, i) not in ref_vars:
-                    # create the reference variable as a singleton with long name
-                    # xxxx maybe index by _nonant_index ???? rather than singleton VAR ???
-                    ref_vars[(ndn, i)] = v
+                    # grab the reference variable
+                    if (nonant_for_fixed_vars) or (not v.is_fixed()):
+                        ref_vars[(ndn, i)] = v
                 # Add a non-anticipativity constraint, except in the case when
                 # the variable is fixed and nonant_for_fixed_vars=False.
+                # or we're in the surrogate nonants
                 elif (nonant_for_fixed_vars) or (not v.is_fixed()):
+                    if v in node.surrogate_vardatas:
+                        continue
                     expr = LinearExpression(linear_coefs=[1,-1],
                                             linear_vars=[v,ref_vars[(ndn,i)]],
                                             constant=0.)
@@ -427,14 +509,11 @@ def write_ef_first_stage_solution(ef,
     NOTE:
         This utility is replicating WheelSpinner.write_first_stage_solution for EF
     """
-    if not haveMPI or (global_rank==0):
-        dirname = os.path.dirname(solution_file_name)
-        if dirname != '':
-            os.makedirs(os.path.dirname(solution_file_name), exist_ok=True)
-            representative_scenario = getattr(ef,ef._ef_scenario_names[0])
-            first_stage_solution_writer(solution_file_name, 
-                                        representative_scenario,
-                                        bundling=False)
+    if global_rank == 0:
+        representative_scenario = getattr(ef,ef._ef_scenario_names[0])
+        first_stage_solution_writer(solution_file_name, 
+                                    representative_scenario,
+                                    bundling=False)
 
 def write_ef_tree_solution(ef, solution_directory_name,
         scenario_tree_solution_writer=scenario_tree_solution_writer):
@@ -448,7 +527,7 @@ def write_ef_tree_solution(ef, solution_directory_name,
     NOTE:
         This utility is replicating WheelSpinner.write_tree_solution for EF
     """
-    if not haveMPI or (global_rank==0):
+    if global_rank==0:
         os.makedirs(solution_directory_name, exist_ok=True)
         for scenario_name, scenario in ef_scenarios(ef):
             scenario_tree_solution_writer(solution_directory_name,
@@ -524,8 +603,9 @@ def parent_ndn(nodename):
     if nodename == 'ROOT':
         return None
     else:
-        return re.search('(.+)_(\d+)',nodename).group(1)
-        
+        return re.search(r'(.+)_(\d+)',nodename).group(1)
+
+    
 def option_string_to_dict(ostr):
     """ Convert a string to the standard dict for solver options.
     Intended for use in the calling program; not internal use here.
@@ -539,10 +619,10 @@ def option_string_to_dict(ostr):
     """
     def convert_value_string_to_number(s):
         try:
-            return float(s)
+            return int(s)
         except ValueError:
             try:
-                return int(s)
+                return float(s)
             except ValueError:
                 return s
 
@@ -560,8 +640,31 @@ def option_string_to_dict(ostr):
             solver_options[option_key] = None
         else:
             raise RuntimeError("Illegally formed subsolve directive"\
-                               + " option=%s detected" % this_option)
+                               + " option=%s detected" % this_option_string)
     return solver_options
+
+
+def option_dict_to_string(odict):
+    """ Convert a standard dict for solver options to a string.
+
+    Args:
+        odict (dict): options dict for Pyomo
+
+    Returns:
+        ostring (str): options string as in mpi-sppy
+
+    Note: None begets None, and empty begets empty
+
+    """
+    if odict is None:
+        return None
+    ostr = ""
+    for i, v in odict.items():
+        if v is None:
+            ostr += "{i} "
+        else:
+            ostr += f"{i}={v} "
+    return ostr
 
 
 ################################################################################
@@ -647,25 +750,25 @@ class _TreeNode():
         if len(desc_leaf_dict)==1 and list(desc_leaf_dict.keys()) == ['ROOT']: 
             #2-stage problem, we don't create leaf nodes
             self.kids = []
-        elif not name+"_0" in desc_leaf_dict:
+        elif name+"_0" not in desc_leaf_dict:
             self.is_leaf = True
             self.kids = []
         else:
-            if len(desc_leaf_dict) < numscens:                
+            if len(desc_leaf_dict) < numscens:  
                 raise RuntimeError(f"There are more scenarios ({numscens}) than remaining leaves, for the node {name}")
             # make children
             first = scenfirst
             self.kids = list()
-            child_regex = re.compile(name+'_\d*\Z')
+            child_regex = re.compile(name+r'_\d*\Z')
             child_list = [x for x in desc_leaf_dict if child_regex.match(x) ]
             for i in range(len(desc_leaf_dict)):
                 childname = name+f"_{i}"
-                if not childname in desc_leaf_dict:
+                if childname not in desc_leaf_dict:
                     if len(child_list) != i:
                         raise RuntimeError("The all_nodenames argument is giving an inconsistent tree."
                                            f"The node {name} has {len(child_list)} children, but {childname} is not one of them.")
                     break
-                childdesc_regex = re.compile(childname+'(_\d*)*\Z')
+                childdesc_regex = re.compile(childname+r'(_\d*)*\Z')
                 child_leaf_dict = {ndn:desc_leaf_dict[ndn] for ndn in desc_leaf_dict \
                                    if childdesc_regex.match(ndn)}
                 #We determine the number of children of this node
@@ -675,7 +778,7 @@ class _TreeNode():
                                            child_leaf_dict, childname))
                 first += child_scens_num
             if last != scenlast:
-                print("Hello", numscens)
+                print("numscens, last, scenlast", numscens, last, scenlast)
                 raise RuntimeError(f"Tree node did not initialize correctly for node {name}")
 
 
@@ -686,13 +789,13 @@ class _TreeNode():
         if self.is_leaf:
             return 1
         else:
-            l = [child.stage_max() for child in self.kids]
-            if l.count(l[0]) != len(l):
-                maxstage = max(l)+ self.stage
-                minstage = min(l)+ self.stage
+            leaves = [child.stage_max() for child in self.kids]
+            if leaves.count(leaves[0]) != len(leaves):
+                maxstage = max(leaves)+ self.stage
+                minstage = min(leaves)+ self.stage
                 raise RuntimeError("The all_nodenames argument is giving an inconsistent tree. "
                                    f"The node {self.name} has descendant leaves with stages going from {minstage} to {maxstage}")
-            return 1+l[0]
+            return 1+leaves[0]
             
                     
 
@@ -796,23 +899,42 @@ class _ScenTree():
     
     
 ######## Utility to attach the one and only node to a two-stage scenario #######
-def attach_root_node(model, firstobj, varlist, nonant_ef_suppl_list=None):
+def attach_root_node(model, firstobj, varlist, nonant_ef_suppl_list=None, surrogate_nonant_list=None, do_uniform=True):
     """ Create a root node as a list to attach to a scenario model
     Args:
         model (ConcreteModel): model to which this will be attached
         firstobj (Pyomo Expression): First stage cost (e.g. model.FC)
         varlist (list): Pyomo Vars in first stage (e.g. [model.A, model.B])
         nonant_ef_suppl_list (list of pyo Var, Vardata or slices):
-              vars for which nonanticipativity constraints tighten the EF
-              (important for bundling)
+              Vars for which nonanticipativity constraints will only be added to
+              the extensive form (important for bundling), but for which mpi-sppy
+              will not enforce them as nonanticipative elsewhere.
+              NOTE: These types of variables are often indicator variables
+                    that are already present in the deterministic model.
+        surrogate_nonant_list (list of pyo Var, VarData or slices):
+              Vars for which nonanticipativity constraints are enforced implicitly
+              by the vars in varlist, but which may speed PH convergence and/or
+              aid in cut generation when considered explicitly.
+              These vars will be ignored for fixers, incumbent finders which
+              fix nonants to calculate solutions, and the EF creator.
+              NOTE: These types of variables are typically artificially added
+                    to the model to capture hierarchical model features.
+        do_uniform (boolean): controls a side-effect to deal with missing probs
 
     Note: 
        attaches a list consisting of one scenario node to the model
     """
     model._mpisppy_node_list = [
-        scenario_tree.ScenarioNode("ROOT",1.0,1,firstobj, None, varlist, model,
-                                   nonant_ef_suppl_list = nonant_ef_suppl_list)
+        scenario_tree.ScenarioNode("ROOT", 1.0, 1, firstobj, varlist, model,
+                                   nonant_ef_suppl_list = nonant_ef_suppl_list,
+                                   surrogate_nonant_list = surrogate_nonant_list,
+                                  )
     ]
+    if do_uniform:
+        # Avoid a warning per scenario
+        if not hasattr(model, "_mpisppy_probability"):
+            model._mpisppy_probability = "uniform"
+    
 
 ### utilities to check the slices and the map ###
 def check4losses(numscens, branching_factors,
@@ -855,7 +977,7 @@ def check4losses(numscens, branching_factors,
         for s in scenlist:
             snum = int(s[8:])
             stagepresents[stagenum][snum] = True
-    missingone = False
+    missingsome = False
     for stage in stagepresents:
         for scen, there in enumerate(stagepresents[stage]):
             if not there:
@@ -875,16 +997,55 @@ def reenable_tictoc_output():
     tt_timer._ostream.close()
     tt_timer._ostream = sys.stdout
 
-    
+
 def find_active_objective(pyomomodel):
+    return find_objective(pyomomodel, active=True)
+
+
+def find_objective(pyomomodel, active=False):
     # return the only active objective or raise and error
     obj = list(pyomomodel.component_data_objects(
         Objective, active=True, descend_into=True))
-    if len(obj) != 1:
+    if len(obj) == 1:
+        return obj[0]
+    if active or len(obj) > 1:
         raise RuntimeError("Could not identify exactly one active "
                            "Objective for model '%s' (found %d objectives)"
                            % (pyomomodel.name, len(obj)))
-    return obj[0]
+    # search again for a single inactive objective
+    obj = list(pyomomodel.component_data_objects(
+        Objective, descend_into=True))
+    if len(obj) == 1:
+        return obj[0]
+    raise RuntimeError("Could not identify exactly one objective for model "
+                       f"{pyomomodel.name} (found {len(obj)} objectives)")
+
+class NonLinearProblemFound(RuntimeError):
+    pass
+
+def nonant_cost_coeffs(s):
+    """
+    return a dictionary from s._mpisppy_data.nonant_indices.keys()
+    to the objective cost coefficient
+    """
+    objective = find_objective(s)
+
+    # initialize to 0
+    cost_coefs = {ndn_i: 0 for ndn_i in s._mpisppy_data.nonant_indices}
+    repn = generate_standard_repn(objective.expr, quadratic=False)
+    for coef, var in zip(repn.linear_coefs, repn.linear_vars):
+        if id(var) in s._mpisppy_data.varid_to_nonant_index:
+            cost_coefs[s._mpisppy_data.varid_to_nonant_index[id(var)]] = coef
+
+    for var in repn.nonlinear_vars:
+        if id(var) in s._mpisppy_data.varid_to_nonant_index:
+            raise RuntimeError(
+                "A call to nonant_cost_coefficient found nonlinear variables in the objective function. "
+                f"Variable {var} has nonlinear interactions in the objective funtion. "
+                "Consider using gradient-based rho."
+            )
+    return cost_coefs
+
 
 def create_nodenames_from_branching_factors(BFS):
     """
@@ -918,7 +1079,7 @@ def get_branching_factors_from_nodenames(all_nodenames):
     staget_node = "ROOT"
     branching_factors = []
     while staget_node+"_0" in all_nodenames:
-        child_regex = re.compile(staget_node+'_\d*\Z')
+        child_regex = re.compile(staget_node+r'_\d*\Z')
         child_list = [x for x in all_nodenames if child_regex.match(x) ]
         
         branching_factors.append(len(child_list))
@@ -933,10 +1094,15 @@ def number_of_nodes(branching_factors):
     #How many nodes does a tree with a given branching_factors have ?
     last_node_stage_num = [i-1 for i in branching_factors]
     return node_idx(last_node_stage_num, branching_factors)
-    
+   
 
+def module_name_to_module(module_name):
+    if inspect.ismodule(module_name):
+        module = module_name
+    else:
+        module = importlib.import_module(module_name)
+    return module
 
-          
 
 if __name__ == "__main__":
     branching_factors = [2,2,2,3]
@@ -956,3 +1122,4 @@ if __name__ == "__main__":
         print(ndn, v)
     print(f"slices: {slices}")
     check4losses(numscens, branching_factors, sntr, slices, ranks_per_scenario)
+

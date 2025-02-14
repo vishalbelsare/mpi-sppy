@@ -20,13 +20,13 @@ The ``utils`` directory has utilities that set up command line options
 and create dictionaries used to create hubs and spokes. The main shared utilities
 are
 
-* ``baseparser.py`` that creates command line options.
-* ``vanilla.py`` that creates dictionaries used for hub and spoke
+* ``config.py`` that creates a Pyomo Config object and command line options.
+* ``cfg_vanilla.py`` (was ``vanilla.py``) that creates dictionaries used for hub and spoke
   creation. These dictionaries are ultimately fed to
   ``sputils.spin_the_wheel``.
 
 The constructors for the vanilla spokes take arguments that vary slightly depending
-on the spoke, but all want the args passed in by the args parser,
+on the spoke, but all want a configuration object,
 followed by ``scenario_creator`` function, a ``scenario_denoument`` function
 (that can be ``None``), a list of scenario names as ``all_scenario_names``,
 and ``scenario_creator_kwargs``. Other arguments can be seen in the file ``mpisppy.utils.vanilla.py``
@@ -40,11 +40,11 @@ Extending Examples
 Many developers
 will need to add extensions. Here are few examples:
 
-* In the ``farmer_cylinders.py`` example, there is a block of code to add a ``--crops-mult`` argument that is passed to the scenario create in the ``scenario_creator_kwargs`` dictionary.
+* In the ``farmer_cylinders.py`` example, there is a block of code to add a ``--crops-mult`` argument that is passed to the scenario creator in the ``scenario_creator_kwargs`` dictionary.
 
-* In the ``hydro_cylinders.py`` example (which has three stages), ``baseparser.py`` is not used. The branching factors are obtained from the command line and passed to the scenario constructor via ``scenario_creator_kwargs`` and also passed to ``sputils.create_nodenames_from_BFs`` to create a node list.
+* In the ``hydro_cylinders.py`` example (which has three stages). The branching factors are obtained from the command line and passed to the scenario constructor via ``scenario_creator_kwargs`` and also passed to ``sputils.create_nodenames_from_BFs`` to create a node list.
 
-* The ``uc_cylinders.py`` example adds arguments that are used to provide data or trigger the inclusion of extensions. The  extension specifications and arguments are added to the dictionaries  (e.g., ``hub_dict``) create by ``vanilla.py``.
+* The ``uc_cylinders.py`` example adds arguments that are used to provide data or trigger the inclusion of extensions. The extension specifications and arguments are added to the dictionaries (e.g., ``hub_dict``) created by ``vanilla.py``.
 
 Not Using Examples Utilities
 ----------------------------
@@ -82,9 +82,14 @@ that new spokes and extensions can simply look for any options that
 they like. The disadvantage is that developers who use ``mpi-sppy``
 cannot count on it to detect spelling errors in options names.
 
+In contrast, ``Config`` objects will check spelling if you assign to
+an existing option, but functions like ``quick_assign`` are more popular and
+this function does will create a new option if the option does not
+exist.
+
 
 Contrasting ``_mpisppy_node_list`` and ``all_node_names``
 ---------------------------------------------------------
 
-Note that ``_mpisppy_node_list``that is attached to scenarios does not have the leaf nodes, but ``all_node_names``
+Note that ``_mpisppy_node_list`` that is attached to scenarios does not have the leaf nodes, but ``all_node_names``
 that is part of the hub dictionary does.

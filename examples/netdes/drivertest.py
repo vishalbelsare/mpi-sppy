@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # DLW version: add Xhat
 import netdes
 
@@ -33,7 +39,7 @@ if __name__=="__main__":
     scenario_creator_kwargs = {"path": path}
 
     hub_ph_options = {
-        "solvername": "gurobi_persistent",
+        "solver_name": "gurobi_persistent",
         "PHIterLimit": 1000,
         "defaultPHrho": 10000, # Big for netdes
         "convthresh": 0.,
@@ -63,7 +69,7 @@ if __name__=="__main__":
     }
 
     ph_options = {
-        "solvername": "gurobi_persistent",
+        "solver_name": "gurobi_persistent",
         "PHIterLimit": 1000,
         "defaultPHrho": 10000, # Big for netdes
         "convthresh": 0., # To prevent FWPH from terminating
@@ -79,7 +85,7 @@ if __name__=="__main__":
         "FW_iter_limit": 10,
         "FW_weight": 0., # Or 1.? I forget what this does, honestly
         "FW_conv_thresh": 1e-4,
-        "solvername": "gurobi_persistent",
+        "solver_name": "gurobi_persistent",
         "FW_verbose": False,
     }
     fw_spoke = {

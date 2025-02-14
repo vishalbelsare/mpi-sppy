@@ -1,3 +1,11 @@
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # updated april 2020
 # DLW: mpisppy version, May 2019
 #
@@ -157,7 +165,6 @@ def MakeAllScenarioTreeNodes(model, bf):
                                                   1.0,
                                                   1,
                                                   model.StageCost[1],
-                                                  None,
                                                   [model.Pgt[1],
                                                    model.Pgh[1],
                                                    model.PDns[1],
@@ -169,7 +176,6 @@ def MakeAllScenarioTreeNodes(model, bf):
                                                    1.0/bf,
                                                    2,
                                                    model.StageCost[2],
-                                                   None,
                                                   [model.Pgt[2],
                                                    model.Pgh[2],
                                                    model.PDns[2],
@@ -191,7 +197,6 @@ def MakeNodesforScen(model, BFs, scennum):
                                          1.0,
                                          1,
                                          model.StageCost[1],
-                                         None,
                                          [model.Pgt[1],
                                           model.Pgh[1],
                                           model.PDns[1],
@@ -201,7 +206,6 @@ def MakeNodesforScen(model, BFs, scennum):
                                          1.0/BFs[0],
                                          2,
                                          model.StageCost[2],
-                                         None,
                                          [model.Pgt[2],
                                           model.Pgh[2],
                                           model.PDns[2],
@@ -241,7 +245,7 @@ def scenario_denouement(rank, scenario_name, scenario):
 if __name__ == "__main__":
     options = {}
     options["asynchronousPH"] = False
-    options["solvername"] = "cplex"
+    options["solver_name"] = "cplex"
     options["PHIterLimit"] = 200
     options["defaultPHrho"] = 1
     options["convthresh"] = 0.0001
@@ -270,7 +274,7 @@ if __name__ == "__main__":
     all_nodenames = sputils.create_nodenames_from_BFs(BFs)
 
     # **** ef ****
-    solver = pyo.SolverFactory(options["solvername"])
+    solver = pyo.SolverFactory(options["solver_name"])
 
     ef = sputils.create_EF(
         all_scenario_names,

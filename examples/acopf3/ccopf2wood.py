@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # updated april 26
 # mpiexec -np 2 python -m mpi4py ccopf2wood.py 2 3
 # (see the first lines of main() to change instances)
@@ -17,15 +23,14 @@ from mpisppy.utils.xhat_eval import Xhat_Eval
 # the problem
 import ACtree as etree
 from ccopf_multistage import pysp2_callback,\
-    scenario_denouement, _md_dict, FixFast, FixNever, FixGaussian
-import rho_setter
+    scenario_denouement, _md_dict, FixFast
 
 import pyomo.environ as pyo
 import socket
 import sys
 import datetime as dt
 
-import mpi4py.MPI as mpi
+import mpisppy.MPI as mpi
 comm_global = mpi.COMM_WORLD
 global_rank = comm_global.Get_rank()
 n_proc = comm_global.Get_size()
@@ -52,7 +57,7 @@ def main():
     branching_factors = [int(sys.argv[1]), int(sys.argv[2])]
     PHIterLimit = int(sys.argv[3])
     scenperbun = int(sys.argv[4])
-    solvername = sys.argv[5]
+    solver_name = sys.argv[5]
 
     seed = 1134
     a_line_fails_prob = 0.1
@@ -70,13 +75,13 @@ def main():
     }
     if scenario_creator_kwargs["convex_relaxation"]:
         # for initialization solve
-        solver = pyo.SolverFactory(solvername)
+        solver = pyo.SolverFactory(solver_name)
         scenario_creator_kwargs["solver"] = None
-        ##if "gurobi" in solvername:
+        ##if "gurobi" in solver_name:
             ##solver.options["BarHomogeneous"] = 1
     else:
-        solver = pyo.SolverFactory(solvername)
-        if "gurobi" in solvername:
+        solver = pyo.SolverFactory(solver_name)
+        if "gurobi" in solver_name:
             solver.options["BarHomogeneous"] = 1
         scenario_creator_kwargs["solver"] = solver
     md_dict = _md_dict(scenario_creator_kwargs["epath"])
@@ -114,19 +119,19 @@ def main():
 
     options = dict()
     if scenario_creator_kwargs["convex_relaxation"]:
-        options["solvername"] = solvername
-        if "gurobi" in options["solvername"]:
+        options["solver_name"] = solver_name
+        if "gurobi" in options["solver_name"]:
             options["iter0_solver_options"] = {"BarHomogeneous": 1}
             options["iterk_solver_options"] = {"BarHomogeneous": 1}
         else:
             options["iter0_solver_options"] = None
             options["iterk_solver_options"] = None
     else:
-        options["solvername"] = solvername  # needs to be ipopt
+        options["solver_name"] = solver_name  # needs to be ipopt
         options["iter0_solver_options"] = None
         options["iterk_solver_options"] = None
     options["PHIterLimit"] = PHIterLimit
-    options["defaultPHrho"] = 1
+    options["defaultPHrho"] = 1000
     options["convthresh"] = 0.001
     options["subsolvedirectives"] = None
     options["verbose"] = False
@@ -135,6 +140,10 @@ def main():
     options["iter0_solver_options"] = None
     options["iterk_solver_options"] = None
     options["branching_factors"] = branching_factors
+
+    options["smoothed"] = 0
+    options["defaultPHp"] = 5000
+    options["defaultPHbeta"] = .05
 
     # try to do something interesting for bundles per rank
     if scenperbun > 0:
@@ -156,7 +165,7 @@ def main():
             nbunstr = "0"
         oline = "\n"+ str(start_time)+","+socket.gethostname()
         oline += ","+str(branching_factors[0])+","+str(branching_factors[1])
-        oline += ", "+str(seed) + ", "+str(options["solvername"])
+        oline += ", "+str(seed) + ", "+str(options["solver_name"])
         oline += ", "+str(n_proc) + ", "+ nbunstr
         oline += ", "+str(options["PHIterLimit"])
         oline += ", "+str(options["convthresh"])
@@ -167,7 +176,7 @@ def main():
 
 
     # PH hub
-    options["tee-rank0-solves"] = True
+    options["tee-rank0-solves"] = False
     hub_dict = {
         "hub_class": PHHub,
         "hub_kwargs": {"options": None},
@@ -176,9 +185,9 @@ def main():
             "options": options,
             "all_scenario_names": all_scenario_names,
             "scenario_creator": pysp2_callback,
-            'scenario_denouement': scenario_denouement,
+            # 'scenario_denouement': scenario_denouement,
             "scenario_creator_kwargs": scenario_creator_kwargs,
-            "rho_setter": rho_setter.ph_rhosetter_callback,
+            # "rho_setter": rho_setter.ph_rhosetter_callback,
             "extensions": None,
             "all_nodenames":all_nodenames,
         }

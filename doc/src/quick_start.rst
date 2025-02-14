@@ -23,9 +23,9 @@ terminal commands:
 
    cd examples
    cd farmer
-   python farmer_ef 1 3 solvername
+   python farmer_ef 1 3 solver_name
 
-but replace `solvername` with the name of the solver you have installed, e.g., if you have installed glpk, use
+but replace `solver_name` with the name of the solver you have installed, e.g., if you have installed glpk, use
 
 ::
    
@@ -36,6 +36,25 @@ have a *proper* installation of MPI and ``mpi4py``; see the section
 :ref:`Install mpi4py`. If you are intending only to solve the
 extensive form directly without decomposition, then you do not need to
 concern yourself with MPI.
+
+
+Pyomo Users who want to add stochastics
+---------------------------------------
+
+Users of ``mpi-sppy`` are viewed as developers, not as
+end-users. Consequently, some Python programming is required.  The
+first thing is to code a scenario creation function. See
+:ref:`scenario_creator` for more information.
+If you create a few more helper functions
+(see :ref:`helper_functions`),
+you can make use of the ``generic_cylinders`` program (see :ref:`generic_cylinders`) to use the hub and spoke system or to solve the the EF directly.
+     
+Alternatively, once you have the scenario creation function,
+you can mimic the code in ``examples.farmer.farmer_ef`` to
+solve the extensive form directly. If you want to use the hub
+and spoke system to solve your problem via decomposition, you
+should proceed to the section on writing :ref:`Drivers`, or to
+the :ref:`Examples` section, or to the :ref:`generic_cylinders` section.
 
 
 PySP Users
@@ -67,20 +86,6 @@ For an example with the hub-spoke features of `mpi-sppy`,
 see ``examples/hydro/hydro_cylinders_pysp.py``.
 
 
-Pyomo Users who want to add stochastics
----------------------------------------
-
-Users of ``mpi-sppy`` are viewed as developers, not as
-end-users. Consequently, some Python programming is required.  The
-first thing is to code a scenario creation function. See
-:ref:`scenario_creator` for more information. Once you have the function,
-you can mimic the code in ``examples.farmer.farmer_ef`` to
-solve the extensive form directly. If you want to use the hub
-and spoke system to solve your problem via decomposition, you
-should proceed to the second on writing :ref:`Drivers` or to
-the :ref:`Examples` section.
-
-
 Researchers who want to compare with mpi-sppy
 ---------------------------------------------
 
@@ -88,4 +93,4 @@ The quickest thing to do is to run one of the canned examples that
 comes with ``mpi-sppy``. They are in subdirectories of
 ``examples`` and sample commands can be obtained by looking at
 the code in ``examples.runall.py``. There is a table in the
-mpi-sppy paper that gives references for all of the examples.
+mpi-sppy paper that gives references for some of the examples.

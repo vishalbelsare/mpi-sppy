@@ -1,5 +1,11 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # base class for hub and for spoke strata
 
 import os
@@ -7,12 +13,12 @@ import time
 import logging
 import weakref
 import numpy as np
-import re
 import pyomo.environ as pyo
 import mpisppy.utils.sputils as sputils
 from mpisppy import global_toc
 
-from mpi4py import MPI
+from pyomo.common.collections import ComponentSet
+from mpisppy import MPI
 
 logger = logging.getLogger("SPBase")
 logger.setLevel(logging.WARN)
@@ -50,7 +56,7 @@ class SPBase:
             mpicomm=None,
             scenario_creator_kwargs=None,
             variable_probability=None,
-            E1_tolerance=1e-5
+            E1_tolerance=1e-5,
     ):
         # TODO add missing and private attributes (JP)
         # TODO add a class attribute called ROOTNODENAME = "ROOT"
@@ -86,15 +92,28 @@ class SPBase:
         self.n_proc = self.mpicomm.Get_size()
         self.global_rank = MPI.COMM_WORLD.Get_rank()
 
-        global_toc("Initializing SPBase")
+        # for writers, if the appropriate
+        # solution is loaded into the subproblems
+        self.tree_solution_available = False
+        self.first_stage_solution_available = False
+        self.best_solution_obj_val = None
+
+        if options.get("toc", True):
+            global_toc("Initializing SPBase")
 
         if self.n_proc > len(self.all_scenario_names):
             raise RuntimeError("More ranks than scenarios")
 
         self._calculate_scenario_ranks()
+        # Put the deprecation message in the init so they should only see it once per rank
         if "bundles_per_rank" in self.options and self.options["bundles_per_rank"] > 0:
             self._assign_bundles()
             self.bundling = True
+            print("WARNING: The bundles-per-rank is now called `loose bundling' and\n"
+                  "loose bundling will be deprecated in the next release\n."
+                  "You should switch to the use of 'proper bundles'.\n"
+                  " See the documentation and also misppy.generic_cylinders.py"
+                  )
         else:
             self.bundling = False
         self._create_scenarios(scenario_creator_kwargs)
@@ -107,14 +126,11 @@ class SPBase:
         self._verify_nonant_lengths()
         self._set_sense()
         self._use_variable_probability_setter()
+        self._set_best_solution_cache()
 
         ## SPCommunicator object
         self._spcomm = None
 
-        # for writers, if the appropriate
-        # solution is loaded into the subproblems
-        self.tree_solution_available = False
-        self.first_stage_solution_available = False
 
     def _set_sense(self, comm=None):
         """ Check to confirm that all the models constructed by scenario_crator
@@ -156,10 +172,10 @@ class SPBase:
                 if ndn not in local_node_nonant_lengths:
                     local_node_nonant_lengths[ndn] = mylen
                 elif local_node_nonant_lengths[ndn] != mylen:
-                    raise RuntimeError(f"Tree node {ndn} has different number of non-anticipative "
-                            f"variables between scenarios {mylen} vs. {local_node_nonant_lengths[ndn]}")
+                    raise RuntimeError(f"Tree node {ndn} has scenarios with different numbers of non-anticipative "
+                            f"variables: {mylen} vs. {local_node_nonant_lengths[ndn]}")
 
-        # compute node xbar values(reduction)
+        # compute node values(reduction)
         for ndn, val in local_node_nonant_lengths.items():
             local_val = np.array([val], 'i')
             max_val = np.zeros(1, 'i')
@@ -168,8 +184,8 @@ class SPBase:
                                       op=MPI.MAX)
 
             if val != int(max_val[0]):
-                raise RuntimeError(f"Tree node {ndn} has different number of non-anticipative "
-                        f"variables between scenarios {val} vs. max {max_val[0]}")
+                raise RuntimeError(f"Tree node {ndn} has scenarios with different numbers of non-anticipative "
+                        f"variables: {val} vs. max {max_val[0]}")
                 
     def _check_nodenames(self):
         for ndn in self.all_nodenames:
@@ -264,6 +280,7 @@ class SPBase:
         if scenario_creator_kwargs is None:
             scenario_creator_kwargs = dict()
 
+        local_ict = list() # Local instance creation times for time tracking
         for sname in self.local_scenario_names:
             instance_creation_start_time = time.time()
             s = self.scenario_creator(sname, **scenario_creator_kwargs)
@@ -274,27 +291,30 @@ class SPBase:
                 if(s._mpisppy_node_list[stmax].name)+'_0' not in self.all_nodenames:
                     raise RuntimeError("The leaf node associated with this scenario is not on all_nodenames"
                         f"Its last non-leaf node {s._mpisppy_node_list[stmax].name} has no first child {s._mpisppy_node_list[stmax].name+'_0'}")
+            local_ict.append(time.time() - instance_creation_start_time)
             
-            if self.options.get("display_timing", False):
-                instance_creation_time = time.time() - instance_creation_start_time
-                all_instance_creation_times = self.mpicomm.gather(
-                    instance_creation_time, root=0
-                )
-                if self.cylinder_rank == 0:
-                    aict = all_instance_creation_times
-                    print("Scenario instance creation times:")
-                    print(f"\tmin={np.min(aict):4.2f} mean={np.mean(aict):4.2f} max={np.max(aict):4.2f}")
+        if self.options.get("display_timing", False):
+            all_instance_creation_times = self.mpicomm.gather(
+                local_ict, root=0
+            )
+            if self.cylinder_rank == 0:
+                aict = [ict for l_ict in all_instance_creation_times for ict in l_ict]
+                print("Scenario instance creation times:")
+                print(f"\tmin={np.min(aict):4.2f} mean={np.mean(aict):4.2f} max={np.max(aict):4.2f}")
         self.scenarios_constructed = True
 
     def _attach_nonant_indices(self):
         for (sname, scenario) in self.local_scenarios.items():
             _nonant_indices = dict()
+            _all_surrogate_nonants = ComponentSet()
             nlens = scenario._mpisppy_data.nlens        
             for node in scenario._mpisppy_node_list:
                 ndn = node.name
                 for i in range(nlens[ndn]):
                     _nonant_indices[ndn,i] = node.nonant_vardata_list[i]
+                _all_surrogate_nonants.update(node.surrogate_vardatas)
             scenario._mpisppy_data.nonant_indices = _nonant_indices
+            scenario._mpisppy_data.all_surrogate_nonants = _all_surrogate_nonants
         self.nonant_length = len(_nonant_indices)
 
 
@@ -337,7 +357,7 @@ class SPBase:
         # check the node names given by the scenarios
         for nodename in nonleafnodes:
             if nodename not in self.all_nodenames:
-                raise RuntimeError(f"Tree node '{nodename}' not in all_nodenames list {self.all_nodenames}")
+                raise RuntimeError(f"Tree node '{nodename}' not in all_nodenames list {self.all_nodenames} for {self.global_rank=}")
 
         # loop over all nodes and make the comms (split requires all ranks)
         # make sure we loop in the same order, so every rank iterate over
@@ -373,7 +393,7 @@ class SPBase:
 
     def _compute_unconditional_node_probabilities(self):
         """ calculates unconditional node probabilities and prob_coeff
-            and _PySP_W_coeff is set to a scalar 1 (used by variable_probability)"""
+            and prob0_mask is set to a scalar 1 (used by variable_probability)"""
         for k,s in self.local_scenarios.items():
             root = s._mpisppy_node_list[0]
             root.uncond_prob = 1.0
@@ -381,16 +401,16 @@ class SPBase:
                 child.uncond_prob = parent.uncond_prob * child.cond_prob
             if not hasattr(s._mpisppy_data, 'prob_coeff'):
                 s._mpisppy_data.prob_coeff = dict()
-                s._mpisppy_data.w_coeff = dict()
+                s._mpisppy_data.prob0_mask = dict()
                 for node in s._mpisppy_node_list:
                     s._mpisppy_data.prob_coeff[node.name] = (s._mpisppy_probability / node.uncond_prob)
-                    s._mpisppy_data.w_coeff[node.name] = 1.0  # needs to be a float
+                    s._mpisppy_data.prob0_mask[node.name] = 1.0  # needs to be a float
 
 
     def _use_variable_probability_setter(self, verbose=False):
         """ set variable probability unconditional values using a function self.variable_probability
         that gives us a list of (id(vardata), probability)]
-        ALSO set _PySP_W_coeff, which is a mask for W calculations (mask out zero probs)
+        ALSO set prob0_mask, which is a mask for W calculations (mask out zero probs)
         Note: We estimate that less than 0.01 of mpi-sppy runs will call this.
         """
         if self.variable_probability is None:
@@ -402,6 +422,7 @@ class SPBase:
         variable_probability_kwargs = self.options['variable_probability_kwargs'] \
                             if 'variable_probability_kwargs' in self.options \
                             else dict()
+        sum_probs = {} # indexed by (ndn,i) - maps to sum of probs for that variable
         for sname, s in self.local_scenarios.items():
             variable_probability = self.variable_probability(s, **variable_probability_kwargs)
             s._mpisppy_data.has_variable_probability = True
@@ -411,17 +432,24 @@ class SPBase:
                 if type(s._mpisppy_data.prob_coeff[ndn]) is float:  # not yet a vector
                     defprob = s._mpisppy_data.prob_coeff[ndn]
                     s._mpisppy_data.prob_coeff[ndn] = np.full(s._mpisppy_data.nlens[ndn], defprob, dtype='d')
-                    s._mpisppy_data.w_coeff[ndn] = np.ones(s._mpisppy_data.nlens[ndn], dtype='d')
+                    s._mpisppy_data.prob0_mask[ndn] = np.ones(s._mpisppy_data.nlens[ndn], dtype='d')
                 s._mpisppy_data.prob_coeff[ndn][i] = prob
                 if prob == 0:  # there's probably a way to do this in numpy...
-                    s._mpisppy_data.w_coeff[ndn][i] = 0
+                    s._mpisppy_data.prob0_mask[ndn][i] = 0
+                sum_probs[(ndn,i)] = sum_probs.get((ndn,i),0.0) + prob
             didit += len(variable_probability)
             skipped += len(s._mpisppy_data.varid_to_nonant_index) - didit
+        
+        """ this needs to be MPIized; but check below should do the trick
+        for (ndn,i),prob in sum_probs.items():
+            if not math.isclose(prob, 1.0, abs_tol=self.E1_tolerance):
+                raise RuntimeError(f"Probability sum for variable with nonant index={i} at node={ndn} is not unity - computed sum={prob}")
+        """
+
         if verbose and self.cylinder_rank == 0:
             print ("variable_probability set",didit,"and skipped",skipped)
 
-        if 'do_not_check_variable_probabilities' in self.options\
-           and not self.options['do_not_check_variable_probabilities']:
+        if not self.options.get('do_not_check_variable_probabilities', False):
             self._check_variable_probabilities_sum(verbose)
 
     def is_zero_prob( self, scenario_model, var ):
@@ -499,11 +527,12 @@ class SPBase:
                 scenario._mpisppy_model = pyo.Block(name="For mpi-sppy Pyomo additions to the scenario model")
 
             if hasattr(scenario, "PySP_prob"):
-                raise RuntimeError(f"PySP_prob is deprecated; use _mpisppy_probability")
-            if not hasattr(scenario, "_mpisppy_probability"):
+                raise RuntimeError("PySP_prob is deprecated; use _mpisppy_probability")
+            pspec =  scenario._mpisppy_probability if hasattr(scenario, "_mpisppy_probability") else None
+            if pspec is None or pspec == "uniform":
                 prob = 1./len(self.all_scenario_names)
-                if self.cylinder_rank == 0:
-                    print(f"Did not find _mpisppy_probability, assuming uniform probability {prob}")
+                if self.cylinder_rank == 0 and pspec is None:
+                    print(f"Did not find _mpisppy_probability, assuming uniform probability {prob} (avoid this message by assigning a probability or the string 'uniform' to _mpisppy_probability on the scenario model object)")
                 scenario._mpisppy_probability = prob
             if not hasattr(scenario, "_mpisppy_node_list"):
                 raise RuntimeError(f"_mpisppy_node_list not found on scenario {sname}")
@@ -513,9 +542,51 @@ class SPBase:
             list of required options. Raises a ValueError if anything is
             missing.
         """
-        missing = [option for option in required_options if option not in given_options] 
+        missing = [option for option in required_options if given_options.get(option) is None] 
         if missing:
             raise ValueError(f"Missing the following required options: {', '.join(missing)}")
+
+    def _set_best_solution_cache(self):
+        # set up best solution cache
+        for k,s in self.local_scenarios.items():
+            s._mpisppy_data.best_solution_cache = None
+
+    def update_best_solution_if_improving(self, obj_val):
+        """ Call if the variable values have a nonanticipative solution
+            with associated obj_val. Will update the best_solution_cache
+            if the solution is better than the existing cached solution
+        """
+        if obj_val is None:
+            return False
+        if self.best_solution_obj_val is None:
+            update = True
+        elif self.is_minimizing:
+            update = (obj_val < self.best_solution_obj_val)
+        else:
+            update = (self.best_solution_obj_val < obj_val)
+        if update:
+            self.best_solution_obj_val = obj_val
+            self._cache_best_solution()
+            return True
+        return False
+
+    def _cache_best_solution(self):
+        for k,s in self.local_scenarios.items():
+            scenario_cache = pyo.ComponentMap()
+            for var in s.component_data_objects(pyo.Var):
+                scenario_cache[var] = var.value
+            s._mpisppy_data.best_solution_cache = scenario_cache
+
+    def load_best_solution(self):
+        for k,s in self.local_scenarios.items():
+            if s._mpisppy_data.best_solution_cache is None:
+                return False
+            for var, value in s._mpisppy_data.best_solution_cache.items():
+                var.set_value(value, skip_validation=True)
+
+        self.first_stage_solution_available = True
+        self.tree_solution_available = True
+        return True
 
     @property
     def spcomm(self):
@@ -531,7 +602,17 @@ class SPBase:
             raise RuntimeError("SPBase.spcomm should only be set once")
 
 
-    def gather_var_values_to_rank0(self, get_zero_prob_values=False):
+    def allreduce_or(self, val):
+        local_val = np.array([val], dtype='int8')
+        global_val = np.zeros(1, dtype='int8')
+        self.mpicomm.Allreduce(local_val, global_val, op=MPI.LOR)
+        if global_val[0] > 0:
+            return True
+        else:
+            return False
+
+
+    def gather_var_values_to_rank0(self, get_zero_prob_values=False, fixed_vars=True):
         """ Gather the values of the nonanticipative variables to the root of
         the `mpicomm` for the cylinder
 
@@ -545,6 +626,8 @@ class SPBase:
         for (sname, model) in self.local_scenarios.items():
             for node in model._mpisppy_node_list:
                 for var in node.nonant_vardata_list:
+                    if not fixed_vars and var.fixed:
+                        continue
                     var_name = var.name
                     if self.bundling:
                         dot_index = var_name.find('.')
@@ -568,17 +651,19 @@ class SPBase:
             return result
 
 
-    def report_var_values_at_rank0(self, header="", print_zero_prob_values=False):
+    def report_var_values_at_rank0(self, header="", print_zero_prob_values=False, fixed_vars=True):
         """ Pretty-print the values and associated statistics for
         non-anticipative variables across all scenarios. """
 
-        var_values = self.gather_var_values_to_rank0(get_zero_prob_values=print_zero_prob_values)
+        var_values = self.gather_var_values_to_rank0(get_zero_prob_values=print_zero_prob_values, fixed_vars=fixed_vars)
 
         if self.cylinder_rank == 0:
 
             if len(header) != 0:
                 print(header)
-
+            if len(var_values) == 0:
+                print("No variables to report (perhaps all are fixed?)")
+                return
             scenario_names = sorted(set(x for (x,y) in var_values))
             max_scenario_name_len = max(len(s) for s in scenario_names)
             variable_names = sorted(set(y for (x,y) in var_values))
@@ -594,12 +679,15 @@ class SPBase:
             for this_var in variable_names:
                 print("{0: <{width}} | ".format(this_var, width=max_variable_name_len), end='')
                 for this_scenario in scenario_names:
-                    this_var_value = var_values[this_scenario, this_var]
-                    if (this_var_value == None) and (not print_zero_prob_values):
+                    if (this_scenario, this_var) not in var_values:
                         print("{0: ^{width}s}".format("-", width=value_field_len), end='')
                     else:
-                        print("{0: {width}.4f}".format(this_var_value, width=value_field_len), end='')
-                    print(" ", end='')
+                        this_var_value = var_values[this_scenario, this_var]
+                        if (this_var_value is None) and (not print_zero_prob_values):
+                            print("{0: ^{width}s}".format("-", width=value_field_len), end='')
+                        else:
+                            print("{0: {width}.4f}".format(this_var_value, width=value_field_len), end='')
+                        print(" ", end='')
                 print("")
 
     def write_first_stage_solution(self, file_name,
@@ -612,7 +700,9 @@ class SPBase:
         """
 
         if not self.first_stage_solution_available:
-            raise RuntimeError("No first stage solution available")
+            # try loading a solution
+            if not self.load_best_solution():
+                raise RuntimeError("No first stage solution available")
         if self.cylinder_rank == 0:
             dirname = os.path.dirname(file_name)
             if dirname != '':
@@ -630,7 +720,9 @@ class SPBase:
                 scenario_tree_solution_writer (optional): custom scenario solution writer function
         """
         if not self.tree_solution_available:
-            raise RuntimeError("No tree solution available")
+            # try loading a solution
+            if not self.load_best_solution():
+                raise RuntimeError("No tree solution available")
         if self.cylinder_rank == 0:
             os.makedirs(directory_name, exist_ok=True)
         self.mpicomm.Barrier()

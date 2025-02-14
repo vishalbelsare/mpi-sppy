@@ -1,14 +1,18 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 ''' Driver script to test the w/xbar read/write extensions using UC 
 '''
 
 import mpisppy.tests.examples.uc.uc_funcs as uc_funcs
 # this version is locked to three scenarios
 
-from mpisppy.utils.wxbarwriter import WXBarWriter
 from mpisppy.utils.wxbarreader import WXBarReader
-import os
 
 from mpisppy.opt.ph import PH
 
@@ -22,7 +26,7 @@ def read_test():
     scenario_rhosetter  = uc_funcs.scenario_rhos
 
     PH_options = {
-        'solvername': 'gurobi',
+        'solver_name': 'gurobi',
         'PHIterLimit': 2,
         'defaultPHrho': 1,
         'convthresh': 1e-6,
@@ -51,7 +55,7 @@ def write_test():
     scenario_rhosetter  = uc_funcs.scenario_rhos
 
     PH_options = {
-        'solvername': 'gurobi',
+        'solver_name': 'gurobi',
         'PHIterLimit': 2,
         'defaultPHrho': 1,
         'convthresh': 1e-6,

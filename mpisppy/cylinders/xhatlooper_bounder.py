@@ -1,9 +1,14 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # updated April 2020
-import mpisppy.cylinders.spoke as spoke
 from mpisppy.extensions.xhatlooper import XhatLooper
-from mpisppy.utils.xhat_eval import Xhat_Eval
+from mpisppy.cylinders.xhatbase import XhatInnerBoundBase
 import logging
 import mpisppy.log
 
@@ -14,61 +19,17 @@ mpisppy.log.setup_logger("mpisppy.cylinders.xhatlooper_bounder",
 logger = logging.getLogger("mpisppy.cylinders.xhatlooper_bounder")
 
 
-class XhatLooperInnerBound(spoke.InnerBoundNonantSpoke):
+class XhatLooperInnerBound(XhatInnerBoundBase):
 
     converger_spoke_char = 'X'
 
-    def xhatlooper_prep(self):
-        verbose = self.opt.options['verbose']
-        if "bundles_per_rank" in self.opt.options\
-           and self.opt.options["bundles_per_rank"] != 0:
-            raise RuntimeError("xhat spokes cannot have bundles (yet)")
-
-        if not isinstance(self.opt, Xhat_Eval):
-            raise RuntimeError("XhatShuffleInnerBound must be used with Xhat_Eval.")
-
-        xhatter = XhatLooper(self.opt)
-
-        ### begin iter0 stuff
-        xhatter.pre_iter0()
-        self.opt._save_original_nonants()
-
-        teeme = False
-        if "tee-rank0-solves" in self.opt.options:
-            teeme = self.opt.options['tee-rank0-solves']
-
-        self.opt.solve_loop(
-            solver_options=self.opt.current_solver_options,
-            dtiming=False,
-            gripe=True,
-            tee=teeme,
-            verbose=verbose
-        )
-        self.opt._update_E1()  # Apologies for doing this after the solves...
-        if abs(1 - self.opt.E1) > self.opt.E1_tolerance:
-            if self.opt.cylinder_rank == 0:
-                print("ERROR")
-                print("Total probability of scenarios was ", self.opt.E1)
-                print("E1_tolerance = ", self.opt.E1_tolerance)
-            quit()
-        infeasP = self.opt.infeas_prob()
-        if infeasP != 0.:
-            if self.opt.cylinder_rank == 0:
-                print("ERROR")
-                print("Infeasibility detected; E_infeas, E1=", infeasP, self.opt.E1)
-            quit()
-        ### end iter0 stuff
-
-        xhatter.post_iter0()
-        self.opt._save_nonants() # make the cache
-
-        return xhatter
+    def xhat_extension(self):
+        return XhatLooper(self.opt)
 
     def main(self):
-        verbose = self.opt.options["verbose"] # typing aid  
         logger.debug(f"Entering main on xhatlooper spoke rank {self.global_rank}")
 
-        xhatter = self.xhatlooper_prep()
+        xhatter = self.xhat_prep()
 
         scen_limit = self.opt.options['xhat_looper_options']['scen_limit']
 
@@ -84,9 +45,12 @@ class XhatLooperInnerBound(spoke.InnerBoundNonantSpoke):
                 logger.debug(f'   *localnonants={str(self.localnonants)}')
 
                 self.opt._put_nonant_cache(self.localnonants)
-                self.opt._restore_nonants()
-                upperbound, srcsname = xhatter.xhat_looper(scen_limit=scen_limit, restore_nonants=False)
+                # just for sending the values to other scenarios
+                # so we don't need to tell persistent solvers
+                self.opt._restore_nonants(update_persistent=False)
+                upperbound, srcsname = xhatter.xhat_looper(scen_limit=scen_limit, restore_nonants=True)
 
                 # send a bound to the opt companion
-                self.update_if_improving(upperbound)
+                # XhatBase._try_one updates the solution cache on the opt object for us
+                self.update_if_improving(upperbound, update_best_solution_cache=False)
             xh_iter += 1

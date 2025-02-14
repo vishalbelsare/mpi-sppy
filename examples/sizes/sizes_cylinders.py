@@ -1,40 +1,50 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
-import sys
-import copy
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 import sizes
 
+from mpisppy.utils import config
 from mpisppy.spin_the_wheel import WheelSpinner
 from mpisppy.extensions.fixer import Fixer
-from mpisppy.utils import baseparsers
-from mpisppy.utils import vanilla
-
+import mpisppy.utils.cfg_vanilla as vanilla
 
 def _parse_args():
-    parser = baseparsers.make_parser()
-    parser = baseparsers.two_sided_args(parser)
-    parser = baseparsers.mip_options(parser)
-    parser = baseparsers.fixer_args(parser)
-    parser = baseparsers.fwph_args(parser)
-    parser = baseparsers.lagrangian_args(parser)
-    parser = baseparsers.xhatlooper_args(parser)
-    parser = baseparsers.xhatshuffle_args(parser)
-    args = parser.parse_args()
-    return args
-
+    cfg = config.Config()
+    
+    cfg.popular_args()
+    cfg.num_scens_required()  # but not positional: you need --num-scens
+    cfg.ph_args()
+    cfg.two_sided_args()
+    cfg.mip_options()
+    cfg.fixer_args()
+    cfg.fwph_args()
+    cfg.lagrangian_args()
+    cfg.xhatlooper_args()
+    cfg.xhatshuffle_args()
+    cfg.xhatxbar_args()
+    cfg.reduced_costs_args()
+    cfg.parse_command_line("sizes_cylinders")
+    return cfg
 
 def main():
     
-    args = _parse_args()
+    cfg = _parse_args()
 
-    num_scen = args.num_scens
+    num_scen = cfg.num_scens
 
-    with_fwph = args.with_fwph
-    with_xhatlooper = args.with_xhatlooper
-    with_xhatshuffle = args.with_xhatshuffle
-    with_lagrangian = args.with_lagrangian
-    with_fixer = args.with_fixer
-    fixer_tol = args.fixer_tol
+    fwph = cfg.fwph
+    xhatlooper = cfg.xhatlooper
+    xhatshuffle = cfg.xhatshuffle
+    xhatxbar = cfg.xhatxbar
+    lagrangian = cfg.lagrangian
+    fixer = cfg.fixer
+    fixer_tol = cfg.fixer_tol
+    reduced_costs = cfg.reduced_costs
 
     if num_scen not in (3, 10):
         raise RuntimeError(f"num_scen must the 3 or 10; was {num_scen}")
@@ -45,35 +55,38 @@ def main():
     all_scenario_names = [f"Scenario{i+1}" for i in range(num_scen)]
     rho_setter = sizes._rho_setter
     
-    if with_fixer:
+    if fixer:
         ph_ext = Fixer
     else:
         ph_ext = None
 
     # Things needed for vanilla cylinders
-    beans = (args, scenario_creator, scenario_denouement, all_scenario_names)        
+    beans = (cfg, scenario_creator, scenario_denouement, all_scenario_names)        
     # Vanilla PH hub
     hub_dict = vanilla.ph_hub(*beans,
                               scenario_creator_kwargs=scenario_creator_kwargs,
                               ph_extensions=ph_ext,
                               rho_setter = rho_setter)
 
-    if with_fixer:
+    if reduced_costs:
+        vanilla.add_reduced_costs_fixer(hub_dict, cfg)
+
+    if fixer:
         hub_dict["opt_kwargs"]["options"]["fixeroptions"] = {
             "verbose": False,
             "boundtol": fixer_tol,
             "id_fix_list_fct": sizes.id_fix_list_fct,
         }
-    if args.default_rho is None:
+    if cfg.default_rho is None:
         # since we are using a rho_setter anyway
         hub_dict.opt_kwargs.options["defaultPHrho"] = 1  
     
     # FWPH spoke
-    if with_fwph:
+    if fwph:
         fw_spoke = vanilla.fwph_spoke(*beans, scenario_creator_kwargs=scenario_creator_kwargs)
 
     # Standard Lagrangian bound spoke
-    if with_lagrangian:
+    if lagrangian:
         lagrangian_spoke = vanilla.lagrangian_spoke(
             *beans,
             scenario_creator_kwargs=scenario_creator_kwargs,
@@ -81,28 +94,44 @@ def main():
         )
 
     # xhat looper bound spoke
-    if with_xhatlooper:
+    if xhatlooper:
         xhatlooper_spoke = vanilla.xhatlooper_spoke(
             *beans,
             scenario_creator_kwargs=scenario_creator_kwargs,
         )
 
     # xhat shuffle bound spoke
-    if with_xhatshuffle:
+    if xhatshuffle:
         xhatshuffle_spoke = vanilla.xhatshuffle_spoke(
             *beans,
             scenario_creator_kwargs=scenario_creator_kwargs,
         )
        
+    # xhat using xbar bound spoke
+    if xhatxbar:
+        xhatxbar_spoke = vanilla.xhatxbar_spoke(
+            *beans,
+            scenario_creator_kwargs=scenario_creator_kwargs,
+        )
+
+    if reduced_costs:
+        reduced_costs_spoke = vanilla.reduced_costs_spoke(*beans,
+                                              scenario_creator_kwargs=scenario_creator_kwargs,
+                                              rho_setter = rho_setter)
+       
     list_of_spoke_dict = list()
-    if with_fwph:
+    if fwph:
         list_of_spoke_dict.append(fw_spoke)
-    if with_lagrangian:
+    if lagrangian:
         list_of_spoke_dict.append(lagrangian_spoke)
-    if with_xhatlooper:
+    if xhatlooper:
         list_of_spoke_dict.append(xhatlooper_spoke)
-    if with_xhatshuffle:
+    if xhatshuffle:
         list_of_spoke_dict.append(xhatshuffle_spoke)
+    if xhatxbar:
+        list_of_spoke_dict.append(xhatxbar_spoke)
+    if reduced_costs:
+        list_of_spoke_dict.append(reduced_costs_spoke)
 
     WheelSpinner(hub_dict, list_of_spoke_dict).spin()
 

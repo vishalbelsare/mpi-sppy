@@ -1,10 +1,16 @@
-# Copyright 2020 by B. Knueven, D. Mildebrath, C. Muir, J-P Watson, and D.L. Woodruff
-# This software is distributed under the 3-clause BSD License.
+###############################################################################
+# mpi-sppy: MPI-based Stochastic Programming in PYthon
+#
+# Copyright (c) 2024, Lawrence Livermore National Security, LLC, Alliance for
+# Sustainable Energy, LLC, The Regents of the University of California, et al.
+# All rights reserved. Please see the files COPYRIGHT.md and LICENSE.md for
+# full copyright and license information.
+###############################################################################
 # PH-specific code
 
 import mpisppy.phbase
 import shutil
-import mpi4py.MPI as mpi
+import mpisppy.MPI as mpi
 
 # decorator snarfed from stack overflow - allows per-rank profile output file generation.
 def profile(filename=None, comm=mpi.COMM_WORLD):
@@ -49,9 +55,8 @@ class PH(mpisppy.phbase.PHBase):
             You need an xhat finder either in denoument or in an extension.
         """
         verbose = self.options['verbose']
-        self.PH_Prep()
-        # Why is subproblem_creation() not called in PH_Prep? Answer: xhat_eval.
-        self.subproblem_creation(verbose)
+        smoothed = self.options['smoothed']
+        self.PH_Prep(attach_smooth = smoothed)
 
         if (verbose):
             print('Calling PH Iter0 on global rank {}'.format(global_rank))
@@ -79,7 +84,7 @@ if __name__ == "__main__":
 
     PHopt = {}
     PHopt["asynchronousPH"] = False
-    PHopt["solvername"] = "cplex"
+    PHopt["solver_name"] = "cplex"
     PHopt["PHIterLimit"] = 5
     PHopt["defaultPHrho"] = 1
     PHopt["convthresh"] = 0.001
@@ -113,7 +118,7 @@ if __name__ == "__main__":
                                      "csvname": "looper.csv"}
     ph = PH(PHopt, all_scenario_names, scenario_creator, scenario_denouement,
             extensions=XhatLooper,
-            PH_converger=FractionalConverger,
+            ph_converger=FractionalConverger,
             rho_setter=None)
     conv, obj, bnd = ph.ph_main()
     print ("Quitting Early.")
@@ -123,7 +128,7 @@ if __name__ == "__main__":
     # now test whatever is new
     ph = PH(PHopt, all_scenario_names, scenario_creator, scenario_denouement,
             extensions=Diagnoser, 
-            PH_converger=None,
+            ph_converger=None,
             rho_setter=None)
     ph.options["PHIterLimit"] = 3
 
@@ -131,16 +136,15 @@ if __name__ == "__main__":
         try:
             shutil.rmtree("delme_diagdir")
             print ("...deleted delme_diagdir")
-        except:
+        except Exception:
             pass
     ph.options["diagnoser_options"] = {"diagnoser_outdir": "delme_diagdir"}
     conv, obj, bnd = ph.ph_main()
 
-    import mpisppy.extensions.avgminmaxer as minmax_extension
     from mpisppy.extensions.avgminmaxer import MinMaxAvg
     ph = PH(PHopt, all_scenario_names, scenario_creator, scenario_denouement,
             extensions=MinMaxAvg,
-            PH_converger=None,
+            ph_converger=None,
             rho_setter=None)
     ph.options["avgminmax_name"] =  "FirstStageCost"
     ph.options["PHIterLimit"] = 3
